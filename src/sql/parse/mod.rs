@@ -78,14 +78,6 @@ pub trait Parser: Sized {
     }
 
     #[inline]
-    fn pure<T>(self, value: T) -> Pure<Self, T>
-    where
-        T: Clone,
-    {
-        Pure(self, value)
-    }
-
-    #[inline]
     fn times(self, n: usize) -> Times<Self> {
         Times(self, n)
     }
@@ -203,15 +195,15 @@ impl<'a> fmt::Display for ParseError<'a> {
                     write!(f, "{} at index {} of input", msg, pos.value())
                 }
             }
-            // TODO
             UnexpectedEndOfInput { pos, input } => {
                 if let Some(string) = input.from(pos) {
                     write!(f, "Unexpected end of input at {:?}", string)
                 } else {
                     write!(
                         f,
-                        "Unexpected end of input at index {} of input",
-                        pos.value()
+                        "Unexpected end of input at index {}. Input length is {}",
+                        pos.value(),
+                        input.len()
                     )
                 }
             }
@@ -471,19 +463,26 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct Pure<P1, T>(P1, T);
-
-impl<P1, T> Parser for Pure<P1, T>
+#[inline]
+pub fn pure<T>(value: T) -> Pure<T>
 where
     T: Clone,
-    P1: Parser,
+{
+    Pure(value)
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Pure<T>(T);
+
+impl<T> Parser for Pure<T>
+where
+    T: Clone,
 {
     type Output = T;
 
     #[inline]
     fn parse<'a>(&self, _: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
-        Ok((self.1.clone(), pos))
+        Ok((self.0.clone(), pos))
     }
 }
 
@@ -701,7 +700,6 @@ impl<P1, P2> Parser for SepBy<P1, P2>
 where
     P1: Parser,
     P2: Parser,
-    P1::Output: std::fmt::Debug,
 {
     type Output = Vec<P1::Output>;
 
@@ -954,5 +952,13 @@ mod test {
             parse(&parser, "[ 1, 2, 3, ]").unwrap_or_else(|e| panic!("{}", e)),
             vec![1, 2, 3]
         );
+    }
+
+    #[test]
+    fn test_whitespace_empty_input() {
+        let parser = char('a').zip(maybe(whitespace())).zip(maybe(char('b')));
+
+        parse(&parser, "a").unwrap_or_else(|e| panic!("{}", e));
+        parse(&parser, "a b").unwrap_or_else(|e| panic!("{}", e));
     }
 }
