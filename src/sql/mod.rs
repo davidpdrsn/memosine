@@ -31,10 +31,11 @@ impl Statement {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Select {
     pub columns: Vec<Column>,
     pub source: Source,
+    pub joins: Vec<Join>,
     pub where_clause: Option<WhereClause>,
 }
 
@@ -53,6 +54,10 @@ impl fmt::Display for Select {
             write!(f, " where {}", where_clause)?;
         }
 
+        for join in &self.joins {
+            write!(f, " {}", join)?;
+        }
+
         Ok(())
     }
 }
@@ -61,28 +66,33 @@ impl Select {
     fn parser() -> impl Parser<Output = Self> {
         let columns_parser = string("select")
             .whitespace()
-            .zip_right(list_of(Column::parser()))
-            .whitespace();
+            .zip_right(list_of(Column::parser()));
 
         let source_parser = string("from").whitespace().zip_right(Source::parser());
 
-        let where_clause_parser = maybe(whitespace())
-            .zip(string("where"))
+        let joins_parser = many(Join::parser());
+
+        let where_clause_parser = string("where")
             .whitespace()
             .zip_right(WhereClause::parser());
 
         columns_parser
+            .zip_left(whitespace())
             .zip(source_parser)
+            .zip_left(whitespace())
+            .zip(joins_parser)
+            .zip_left(whitespace())
             .zip(maybe(where_clause_parser))
-            .map(|((columns, source), where_clause)| Select {
+            .map(|(((columns, source), joins), where_clause)| Select {
                 columns: columns.clone(),
                 source,
+                joins,
                 where_clause,
             })
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Source {
     Table(Ident),
     Query { query: Box<Select>, alias: Ident },
@@ -129,6 +139,60 @@ impl Parser for SourceParser {
 
         parser.parse(input, pos)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Join {
+    ty: JoinType,
+    source: Source,
+    where_clause: WhereClause,
+}
+
+impl fmt::Display for Join {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match &self.ty {
+            JoinType::Inner => write!(f, "inner ")?,
+            JoinType::Outer => write!(f, "outer ")?,
+        }
+
+        write!(f, "join {} on {}", self.source, self.where_clause)?;
+
+        Ok(())
+    }
+}
+
+impl Join {
+    fn parser() -> impl Parser<Output = Self> {
+        let inner = string("inner").map(|_| JoinType::Inner);
+        let outer = string("outer").map(|_| JoinType::Outer);
+
+        (inner.or(outer))
+            .whitespace()
+            .zip_left(string("join"))
+            .whitespace()
+            .zip(Source::parser())
+            .whitespace()
+            .zip_left(string("on"))
+            .whitespace()
+            .zip(WhereClause::parser())
+            .map(|((ty, source), where_clause)| Join {
+                ty,
+                source,
+                where_clause,
+            })
+    }
+}
+
+#[derive(Debug, Clone)]
+enum JoinType {
+    Inner,
+    Outer,
+}
+
+#[derive(Debug, Clone)]
+pub struct OuterJoin {
+    source: Source,
+    where_clause: WhereClause,
 }
 
 #[derive(Debug, Clone)]
@@ -204,7 +268,8 @@ impl fmt::Display for Ident {
 
 impl Ident {
     fn parser() -> impl Parser<Output = Self> {
-        let ident_char = any_char().when(|c| !c.is_whitespace() && c.is_alphanumeric());
+        let ident_char =
+            any_char().when(|c| !c.is_whitespace() && (c.is_alphanumeric() || c == &'_'));
 
         many1(ident_char)
             .map(|chars| chars.iter().collect::<String>())
@@ -220,18 +285,30 @@ fn list_of<P: Parser>(p: P) -> impl Parser<Output = Vec<P::Output>> {
 #[derive(Debug, Clone)]
 pub enum WhereClause {
     Grouped(Box<WhereClause>),
-    Eq(Expr, Expr),
     And(Box<WhereClause>, Box<WhereClause>),
     Or(Box<WhereClause>, Box<WhereClause>),
+
+    Eq(Expr, Expr),
+    NotEq(Expr, Expr),
+    Lt(Expr, Expr),
+    Gt(Expr, Expr),
+    LtEq(Expr, Expr),
+    GtEq(Expr, Expr),
 }
 
 impl fmt::Display for WhereClause {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             WhereClause::Grouped(inner) => write!(f, "({})", inner),
-            WhereClause::Eq(lhs, rhs) => write!(f, "{} = {}", lhs, rhs),
             WhereClause::And(lhs, rhs) => write!(f, "{} and {}", lhs, rhs),
             WhereClause::Or(lhs, rhs) => write!(f, "{} or {}", lhs, rhs),
+
+            WhereClause::Eq(lhs, rhs) => write!(f, "{} = {}", lhs, rhs),
+            WhereClause::NotEq(lhs, rhs) => write!(f, "{} != {}", lhs, rhs),
+            WhereClause::Lt(lhs, rhs) => write!(f, "{} < {}", lhs, rhs),
+            WhereClause::Gt(lhs, rhs) => write!(f, "{} > {}", lhs, rhs),
+            WhereClause::LtEq(lhs, rhs) => write!(f, "{} <= {}", lhs, rhs),
+            WhereClause::GtEq(lhs, rhs) => write!(f, "{} >= {}", lhs, rhs),
         }
     }
 }
@@ -250,13 +327,22 @@ impl Parser for WhereClauseParser {
 
     fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
         {
-            let eq = Expr::parser()
-                .whitespace()
-                .zip_left(char('='))
-                .whitespace()
-                .zip(Expr::parser())
-                .zip_left(maybe(whitespace()))
-                .map(|(lhs, rhs)| WhereClause::Eq(lhs, rhs));
+            let operator = |op: StringParser, f: fn(Expr, Expr) -> WhereClause| {
+                Expr::parser()
+                    .whitespace()
+                    .zip_left(op)
+                    .whitespace()
+                    .zip(Expr::parser())
+                    .zip_left(maybe(whitespace()))
+                    .map(move |(lhs, rhs)| f(lhs, rhs))
+            };
+
+            let eq = operator(string("="), WhereClause::Eq);
+            let not_eq = operator(string("!="), WhereClause::NotEq);
+            let lt = operator(string("<"), WhereClause::Lt);
+            let gt = operator(string(">"), WhereClause::Gt);
+            let lt_eq = operator(string("<="), WhereClause::LtEq);
+            let gt_eq = operator(string(">="), WhereClause::GtEq);
 
             let lhs_rhs_parser = |s| {
                 whitespace()
@@ -275,7 +361,9 @@ impl Parser for WhereClauseParser {
                 .zip_left(maybe(whitespace()))
                 .map(|wc| WhereClause::Grouped(Box::new(wc)));
 
-            (eq.or(grouped))
+            let base = eq.or(not_eq).or(lt).or(gt).or(lt_eq).or(gt_eq);
+
+            (base.or(grouped))
                 .zip(maybe(and))
                 .map(|(lhs, rhs)| match rhs {
                     Some(rhs) => WhereClause::And(Box::new(lhs), Box::new(rhs)),
@@ -379,6 +467,9 @@ mod test {
     #[test]
     fn simple_where() {
         test_parse("select id from users where id = 1");
+        test_parse("select id from users where id = id");
+        test_parse("select id from users where users.id = id");
+        test_parse("select id from users where id = users.id");
     }
 
     #[test]
@@ -404,6 +495,75 @@ mod test {
         test_parse("select id from users where (id = 1)");
         test_parse("select id from users where (id = 1) and id = 2");
         test_parse("select id from users where ((id = 1 ) and id = 2)");
+    }
+
+    #[test]
+    fn inner_joins() {
+        test_parse(
+            r#"
+                select users.id, countries.id
+                from users
+                inner join countries on countries.id = users.country_id
+            "#,
+        );
+
+        test_parse(
+            r#"
+                select users.id, countries.id
+                from users
+                inner join countries on countries.id = users.country_id
+                inner join claims on claims.user_id = users.id
+            "#,
+        );
+    }
+
+    #[test]
+    fn outer_joins() {
+        test_parse(
+            r#"
+                select users.id, countries.id
+                from users
+                outer join countries on countries.id = users.country_id
+                outer join claims on claims.user_id = users.id
+            "#,
+        );
+    }
+
+    #[test]
+    fn mixed_joins() {
+        test_parse(
+            r#"
+                select users.id, countries.id
+                from users
+                inner join countries on countries.id = users.country_id
+                outer join countries on countries.id = users.country_id
+            "#,
+        );
+    }
+
+    #[test]
+    fn complex_query() {
+        test_parse(
+            r#"
+                select *
+                from (
+                    select users.*
+                    from users
+                    inner join (select users.id from users) t on users.id = users.id
+                    outer join users on users.id = users.id
+                ) t
+                outer join countries on countries.id = users.country_id
+                inner join countries on countries.id = users.country_id
+                inner join (select * from users) u on
+                    countries.id = u.country_id
+                    and (1 = 1 or 2 != 2)
+                where
+                    users.id = 1
+                    and 1 = 1
+                    or (2 < 1 and 1 <= users.id)
+                    or (2 > 1 and 1 >= users.id)
+            "#,
+        );
     }
 
     fn test_parse(query: &str) -> Statement {

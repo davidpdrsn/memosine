@@ -1,5 +1,3 @@
-use extend::ext;
-use std::borrow::Borrow;
 use std::fmt;
 
 mod pos;
@@ -38,6 +36,7 @@ pub trait Parser: Sized {
     }
 
     // TODO: filter_map combinator
+    // TODO: any combinator. From list of parsers to first match
 
     #[inline]
     fn and_then<F, P2>(self, f: F) -> AndThen<Self, F>
@@ -189,14 +188,14 @@ impl<'a> fmt::Display for ParseError<'a> {
         match self {
             Named { name, inner } => write!(f, "\"{}\" failed with msg: {}", name, inner),
             Message { msg, input, pos } => {
-                if let Some(string) = input.from(pos) {
+                if let Some(string) = input.from(*pos) {
                     write!(f, "{} at {:?}", msg, string)
                 } else {
                     write!(f, "{} at index {} of input", msg, pos.value())
                 }
             }
             UnexpectedEndOfInput { pos, input } => {
-                if let Some(string) = input.from(pos) {
+                if let Some(string) = input.from(*pos) {
                     write!(f, "Unexpected end of input at {:?}", string)
                 } else {
                     write!(
@@ -213,10 +212,17 @@ impl<'a> fmt::Display for ParseError<'a> {
 
 impl<'a> std::error::Error for ParseError<'a> {}
 
-#[ext]
-impl<'a> &'a str {
-    fn from<Q: Borrow<Pos>>(self, pos: Q) -> Option<&'a str> {
-        let idx = pos.borrow().value();
+trait StringSliceExt<'a> {
+    fn from(self, pos: Pos) -> Option<&'a str>;
+
+    fn to(self, pos: Pos) -> Option<&'a str>;
+
+    fn at(self, pos: Pos) -> Option<char>;
+}
+
+impl<'a> StringSliceExt<'a> for &'a str {
+    fn from(self, pos: Pos) -> Option<&'a str> {
+        let idx = pos.value();
         if idx < self.len() {
             Some(&self[idx..])
         } else {
@@ -224,8 +230,8 @@ impl<'a> &'a str {
         }
     }
 
-    fn to<Q: Borrow<Pos>>(self, pos: Q) -> Option<&'a str> {
-        let idx = pos.borrow().value();
+    fn to(self, pos: Pos) -> Option<&'a str> {
+        let idx = pos.value();
         if idx < self.len() {
             Some(&self[0..idx])
         } else {
@@ -233,8 +239,8 @@ impl<'a> &'a str {
         }
     }
 
-    fn at<Q: Borrow<Pos>>(self, pos: Q) -> Option<char> {
-        let idx = pos.borrow().value();
+    fn at(self, pos: Pos) -> Option<char> {
+        let idx = pos.value();
         let bytes = self.as_bytes();
         assert_eq!(self.len(), bytes.len());
 
@@ -658,10 +664,11 @@ impl<P: Parser> Parser for PrintRemainingInput<P> {
 
         if let Some(s) = input.from(pos) {
             eprintln!("Remaining input: {:?}", s);
-            Ok((out, new_pos))
         } else {
-            Err(ParseError::UnexpectedEndOfInput { pos, input })
+            eprintln!("No output remaining");
         }
+
+        Ok((out, new_pos))
     }
 }
 

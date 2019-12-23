@@ -1,10 +1,12 @@
+use sql::{parse, Statement};
+use std::io;
+use std::io::Read;
+
 pub mod sql;
 
-use sql::{parse, Statement};
-
 fn main() {
-    // let query = "select users.id, name from users";
-    // let parsed = parse(&Statement::parser(), query).unwrap_or_else(|e| panic!("{}", e));
-    // println!("{:?}", parsed);
+    let mut query = String::new();
+    io::stdin().read_to_string(&mut query).unwrap();
+    let ast = parse(&Statement::parser(), &query).unwrap();
+    println!("{:#?}", ast);
 }
-
