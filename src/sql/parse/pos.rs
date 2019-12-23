@@ -30,7 +30,11 @@ impl Sub<usize> for Pos {
     type Output = Pos;
 
     fn sub(self, other: usize) -> Pos {
-        Pos(self.0 - other)
+        if self.0 == 0 {
+            self
+        } else {
+            Pos(self.0 - other)
+        }
     }
 }
 

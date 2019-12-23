@@ -3,28 +3,33 @@ pub mod sql;
 use sql::parse::*;
 
 fn main() {
-    let query = "select id from users";
+    let query = "select id, name, from users";
 
     let parsed = parse(&Select::parser(), query).unwrap_or_else(|e| panic!("{}", e));
     println!("{:?}", parsed);
 }
 
+static KEYWORDS: &[&'static str] = &["select", "from"];
+
 #[derive(Debug)]
 struct Select {
     columns: Vec<Ident>,
-    from: Ident,
+    source: Ident,
 }
 
 impl Select {
     fn parser() -> impl Parser<Output = Self> {
         string("select")
-            .and_then(|_| Ident::parser())
-            .and_then(|column| {
+            .whitespace()
+            .zip_right(Ident::list_parser())
+            .whitespace()
+            .and_then(|columns| {
                 string("from")
-                    .and_then(|_| Ident::parser())
-                    .map(move |from| Select {
-                        columns: vec![column.clone()],
-                        from,
+                    .whitespace()
+                    .zip_right(Ident::parser())
+                    .map(move |source| Select {
+                        columns: columns.clone(),
+                        source,
                     })
             })
     }
@@ -32,15 +37,22 @@ impl Select {
 
 #[derive(Debug, Clone)]
 struct Ident {
-    name: String,
+    value: String,
 }
 
 impl Ident {
     fn parser() -> impl Parser<Output = Self> {
-        let non_whitespace = any_char().when(|c| !c.is_whitespace());
+        let ident_char = any_char().when(|c| !c.is_whitespace() && c.is_alphanumeric());
 
-        many(non_whitespace).map(|s| Ident {
-            name: s.iter().collect(),
-        })
+        many(ident_char)
+            .map(|chars| chars.iter().collect::<String>())
+            .when(|value| !KEYWORDS.contains(&value.as_str()))
+            .map(|value| Ident { value })
+    }
+
+    fn list_parser() -> impl Parser<Output = Vec<Self>> {
+        Self::parser()
+            .tap_print_debug()
+            .sep_by_allow_trailing(char(',').whitespace())
     }
 }

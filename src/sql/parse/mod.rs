@@ -37,6 +37,8 @@ pub trait Parser: Sized {
         Map(self, f)
     }
 
+    // TODO: filter_map combinator
+
     #[inline]
     fn and_then<F, P2>(self, f: F) -> AndThen<Self, F>
     where
@@ -113,13 +115,61 @@ pub trait Parser: Sized {
     }
 
     #[inline]
-    fn debug_input(self) -> DebugInput<Self> {
-        DebugInput(self)
+    fn tap<F>(self, f: F) -> Tap<Self, F>
+    where
+        F: Fn(&Self::Output),
+    {
+        Tap(self, f)
+    }
+
+    #[inline]
+    fn tap_print_debug(self) -> Tap<Self, Box<dyn Fn(&Self::Output)>>
+    where
+        Self::Output: std::fmt::Debug,
+    {
+        Tap(self, Box::new(|x| eprintln!("{:?}", x)))
+    }
+
+    #[inline]
+    fn tap_print_display(self) -> Tap<Self, Box<dyn Fn(&Self::Output)>>
+    where
+        Self::Output: std::fmt::Display,
+    {
+        Tap(self, Box::new(|x| eprintln!("{}", x)))
+    }
+
+    #[inline]
+    fn print_remaining_input(self) -> PrintRemainingInput<Self> {
+        PrintRemainingInput(self)
     }
 
     #[inline]
     fn whitespace(self) -> Whitespace<Self> {
         Whitespace(self)
+    }
+
+    #[inline]
+    fn sep_by<P>(self, sep: P) -> SepBy<Self, P>
+    where
+        P: Parser,
+    {
+        SepBy {
+            item: self,
+            sep,
+            allow_trailing: false,
+        }
+    }
+
+    #[inline]
+    fn sep_by_allow_trailing<P>(self, sep: P) -> SepBy<Self, P>
+    where
+        P: Parser,
+    {
+        SepBy {
+            item: self,
+            sep,
+            allow_trailing: true,
+        }
     }
 }
 
@@ -158,7 +208,11 @@ impl<'a> fmt::Display for ParseError<'a> {
                 if let Some(string) = input.from(pos) {
                     write!(f, "Unexpected end of input at {:?}", string)
                 } else {
-                    write!(f, "Unexpected end of input at index {} of input", pos.value())
+                    write!(
+                        f,
+                        "Unexpected end of input at index {} of input",
+                        pos.value()
+                    )
                 }
             }
         }
@@ -327,7 +381,7 @@ impl Parser for Char {
             Ok((c, pos + 1))
         } else {
             Err(ParseError::Message {
-                msg: format!("Unexpected {}, expected {}", c, self.0),
+                msg: format!("Unexpected `{}`, expected `{}`", c, self.0),
                 input,
                 pos,
             })
@@ -593,18 +647,19 @@ where
 }
 
 #[derive(Debug)]
-pub struct DebugInput<P>(P);
+pub struct PrintRemainingInput<P>(P);
 
-impl<P: Parser> Parser for DebugInput<P> {
+impl<P: Parser> Parser for PrintRemainingInput<P> {
     type Output = P::Output;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
-        println!("{:?}", pos);
+    fn parse<'a>(&self, input: &'a str, mut pos: Pos) -> ParseResult<'a, Self::Output> {
+        let (out, new_pos) = self.0.parse(input, pos)?;
+        pos = new_pos;
+
         if let Some(s) = input.from(pos) {
             eprintln!("Remaining input: {:?}", s);
-
-            self.0.parse(input, pos)
+            Ok((out, new_pos))
         } else {
             Err(ParseError::UnexpectedEndOfInput { pos, input })
         }
@@ -618,20 +673,85 @@ impl<P: Parser> Parser for Whitespace<P> {
     type Output = P::Output;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, mut pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+        let (out, mut pos) = self.0.parse(input, pos)?;
+
         loop {
             if let Some(c) = input.at(pos) {
                 if c.is_whitespace() {
                     pos = pos + 1;
                 } else {
-                    break;
+                    return Ok((out, pos));
                 }
             } else {
                 return Err(ParseError::UnexpectedEndOfInput { pos, input });
             }
         }
+    }
+}
 
-        self.0.parse(input, pos)
+#[derive(Debug)]
+pub struct SepBy<P1, P2> {
+    item: P1,
+    sep: P2,
+    allow_trailing: bool,
+}
+
+impl<P1, P2> Parser for SepBy<P1, P2>
+where
+    P1: Parser,
+    P2: Parser,
+    P1::Output: std::fmt::Debug,
+{
+    type Output = Vec<P1::Output>;
+
+    #[inline]
+    fn parse<'a>(&self, input: &'a str, mut pos: Pos) -> ParseResult<'a, Self::Output> {
+        let mut acc = vec![];
+        let mut first_round = true;
+
+        loop {
+            match self.item.parse(input, pos) {
+                Ok((item, new_pos)) => {
+                    pos = new_pos;
+                    acc.push(item);
+                }
+                Err(err) => {
+                    if self.allow_trailing && !first_round {
+                        break;
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
+
+            match self.sep.parse(input, pos) {
+                Ok((_, new_pos)) => pos = new_pos,
+                Err(_) => break,
+            }
+
+            first_round = false;
+        }
+
+        Ok((acc, pos))
+    }
+}
+
+#[derive(Debug)]
+pub struct Tap<P, F>(P, F);
+
+impl<P, F> Parser for Tap<P, F>
+where
+    P: Parser,
+    F: Fn(&P::Output),
+{
+    type Output = P::Output;
+
+    #[inline]
+    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+        let (out, pos) = self.0.parse(input, pos)?;
+        (self.1)(&out);
+        Ok((out, pos))
     }
 }
 
@@ -737,5 +857,102 @@ mod test {
         let input = "aaaaa";
         let parser = char('a').times(4);
         assert!(parse(&parser, input).is_err());
+    }
+
+    #[test]
+    fn test_string() {
+        let input = "foo bar";
+        let parser = string("foo")
+            .whitespace()
+            .and_then(|_| string("bar"))
+            .map(|_| ());
+        parse(&parser, input).unwrap();
+    }
+
+    #[test]
+    fn test_sep_by() {
+        let input = "a, a, a";
+        let parser = char('a').sep_by(char(',').whitespace());
+        let out = parse(&parser, input).unwrap_or_else(|e| panic!("{}", e));
+        assert_eq!(out, vec!['a', 'a', 'a']);
+
+        let input = "a";
+        let parser = char('a').sep_by(char(','));
+        let out = parse(&parser, input).unwrap_or_else(|e| panic!("{}", e));
+        assert_eq!(out, vec!['a']);
+
+        let input = "a,a,";
+        let parser = char('a').sep_by(char(','));
+        assert!(parse(&parser, input).is_err());
+
+        let input = "a,a,";
+        let parser = char('a').sep_by_allow_trailing(char(','));
+        parse(&parser, input).unwrap_or_else(|e| panic!("{}", e));
+
+        let input = "";
+        let parser = char('a').sep_by(char(','));
+        assert!(parse(&parser, input).is_err());
+
+        let input = "";
+        let parser = char('a').sep_by_allow_trailing(char(','));
+        assert!(parse(&parser, input).is_err());
+    }
+
+    #[test]
+    fn test_complex_sep_by() {
+        let radix = 10;
+        let digit = any_char()
+            .when(|c| c.is_digit(radix))
+            .map(|c| c.to_digit(radix).unwrap());
+
+        let parser = char('[')
+            .whitespace()
+            .zip_right(
+                digit
+                    .whitespace()
+                    .sep_by_allow_trailing(char(',').whitespace()),
+            )
+            .whitespace()
+            .zip_left(char(']'));
+
+        assert_eq!(
+            parse(&parser, "[1,2,3]").unwrap_or_else(|e| panic!("{}", e)),
+            vec![1, 2, 3]
+        );
+
+        assert_eq!(
+            parse(&parser, "[1, 2, 3]").unwrap_or_else(|e| panic!("{}", e)),
+            vec![1, 2, 3]
+        );
+
+        assert_eq!(
+            parse(&parser, "[1,2,3,]").unwrap_or_else(|e| panic!("{}", e)),
+            vec![1, 2, 3]
+        );
+
+        assert_eq!(
+            parse(&parser, "[1, 2, 3,]").unwrap_or_else(|e| panic!("{}", e)),
+            vec![1, 2, 3]
+        );
+
+        assert_eq!(
+            parse(&parser, "[ 1,2,3 ]").unwrap_or_else(|e| panic!("{}", e)),
+            vec![1, 2, 3]
+        );
+
+        assert_eq!(
+            parse(&parser, "[ 1, 2, 3 ]").unwrap_or_else(|e| panic!("{}", e)),
+            vec![1, 2, 3]
+        );
+
+        assert_eq!(
+            parse(&parser, "[ 1,2,3, ]").unwrap_or_else(|e| panic!("{}", e)),
+            vec![1, 2, 3]
+        );
+
+        assert_eq!(
+            parse(&parser, "[ 1, 2, 3, ]").unwrap_or_else(|e| panic!("{}", e)),
+            vec![1, 2, 3]
+        );
     }
 }
