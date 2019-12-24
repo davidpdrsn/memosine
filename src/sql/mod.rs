@@ -1,3 +1,4 @@
+use crate::schema::Type;
 use parse::*;
 use std::collections::HashMap;
 use std::fmt;
@@ -10,12 +11,16 @@ pub fn parse_sql_query(query: &str) -> Result<Statement, ParseError> {
     parse(&Statement::parser(), query)
 }
 
+pub fn parse_sql_queries(query: &str) -> Result<Vec<Statement>, ParseError> {
+    parse(&many(Statement::parser()), query)
+}
+
 static KEYWORDS: &[&'static str] = &["select", "from"];
 
 #[derive(Debug)]
 pub enum Statement {
     Select(Select),
-    // Insert(Insert),
+    Insert(Insert),
     // Update(Update),
     // Delete(Delete),
     CreateTable(CreateTable),
@@ -26,9 +31,14 @@ pub enum Statement {
 impl fmt::Display for Statement {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Statement::Select(inner) => write!(f, "{}", inner),
-            Statement::CreateTable(inner) => write!(f, "{}", inner),
+            Statement::Select(inner) => write!(f, "{}", inner)?,
+            Statement::CreateTable(inner) => write!(f, "{}", inner)?,
+            Statement::Insert(inner) => write!(f, "{}", inner)?,
         }
+
+        write!(f, ";")?;
+
+        Ok(())
     }
 }
 
@@ -36,10 +46,15 @@ impl Statement {
     pub fn parser() -> impl Parser<Output = Self> {
         let select = Select::parser().map(Statement::Select);
         let create_table = CreateTable::parser().map(Statement::CreateTable);
+        let insert = Insert::parser().map(Statement::Insert);
 
-        let parser = select.or(create_table);
+        let parser = select.or(create_table).or(insert);
 
-        whitespace().zip_right(parser).zip_left(whitespace())
+        whitespace()
+            .zip_right(parser)
+            .zip_left(maybe(whitespace()))
+            .zip_left(maybe(char(';')))
+            .zip_left(maybe(whitespace()))
     }
 }
 
@@ -210,7 +225,10 @@ pub struct OuterJoin {
 #[derive(Debug, Clone)]
 pub enum Column {
     Relative(SelectedColumn),
-    Absolute { table: Ident, column: SelectedColumn },
+    Absolute {
+        table: Ident,
+        column: SelectedColumn,
+    },
 }
 
 impl fmt::Display for Column {
@@ -424,12 +442,14 @@ impl Expr {
 #[derive(Debug, Clone)]
 pub enum Literal {
     Int(i64),
+    String(String),
 }
 
 impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Literal::Int(inner) => write!(f, "{}", inner),
+            Literal::String(inner) => write!(f, "{:?}", inner),
         }
     }
 }
@@ -441,7 +461,13 @@ impl Literal {
             Literal::Int(digits)
         });
 
-        int
+        let string = char('"')
+            .zip_right(many(any_char().when(|c| c != &'"')))
+            .zip_left(char('"'))
+            .map(|chars| chars.iter().collect::<String>())
+            .map(|s| Literal::String(s));
+
+        int.or(string).whitespace()
     }
 }
 
@@ -458,7 +484,7 @@ impl fmt::Display for CreateTable {
         for (col, ty) in &self.columns {
             writeln!(f, "  {} {},", col, ty)?;
         }
-        writeln!(f, ")")?;
+        write!(f, ")")?;
 
         Ok(())
     }
@@ -497,12 +523,6 @@ impl CreateTable {
     }
 }
 
-#[derive(Debug, Clone)]
-enum Type {
-    Named(Ident),
-    Option(Ident),
-}
-
 impl Type {
     fn parser() -> impl Parser<Output = Self> {
         let named = Ident::parser().map(|id| Type::Named(id));
@@ -515,16 +535,51 @@ impl Type {
             .zip_left(char('>'))
             .map(|id| Type::Option(id));
 
-        option.or(named)
+        option.or(named).whitespace()
     }
 }
 
-impl fmt::Display for Type {
+#[derive(Debug, Clone)]
+pub struct Insert {
+    table: Ident,
+    values: Vec<(Ident, Literal)>,
+}
+
+impl Insert {
+    fn parser() -> impl Parser<Output = Self> {
+        let value_parser = Ident::parser()
+            .whitespace()
+            .zip_left(char('='))
+            .whitespace()
+            .zip(Literal::parser());
+
+        string("insert")
+            .whitespace()
+            .zip_right(string("into"))
+            .whitespace()
+            .zip_right(Ident::parser())
+            .whitespace()
+            .zip_left(char('('))
+            .whitespace()
+            .zip(value_parser.sep_by_allow_trailing(char(',').whitespace()))
+            .zip_left(char(')'))
+            .map(|(table, values)| Insert { table, values })
+    }
+}
+
+impl fmt::Display for Insert {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Type::Named(ident) => write!(f, "{}", ident),
-            Type::Option(ty) => write!(f, "Option<{}>", ty),
-        }
+        write!(f, "insert into {}", self.table)?;
+
+        let values = self
+            .values
+            .iter()
+            .map(|(key, value)| format!("{} = {}", key, value))
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(f, "{}", values)?;
+
+        Ok(())
     }
 }
 
@@ -676,6 +731,18 @@ mod test {
                     country_id Option<Int>,
                     name String,
                 )
+            "#,
+        );
+    }
+
+    #[test]
+    fn insert_into() {
+        test_parse(
+            r#"
+                insert into users (
+                    name = "Bob",
+                    age = 20,
+                );
             "#,
         );
     }
