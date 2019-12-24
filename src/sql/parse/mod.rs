@@ -1,4 +1,5 @@
 use std::fmt;
+use std::marker::PhantomData;
 
 mod pos;
 
@@ -757,6 +758,53 @@ where
         let (out, pos) = self.0.parse(input, pos)?;
         (self.1)(&out);
         Ok((out, pos))
+    }
+}
+
+#[inline]
+pub fn error<T, E>(e: E) -> impl Parser<Output = T>
+where
+    E: fmt::Display,
+{
+    Error(e, PhantomData)
+}
+
+#[derive(Debug, Copy, Clone)]
+struct Error<E, T>(E, PhantomData<T>);
+
+impl<E, T> Parser for Error<E, T>
+where
+    E: fmt::Display,
+{
+    type Output = T;
+
+    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+        Err(ParseError::Message {
+            msg: format!("{}", self.0),
+            pos,
+            input,
+        })
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Either<A, B> {
+    A(A),
+    B(B),
+}
+
+impl<A, B, Out> Parser for Either<A, B>
+where
+    A: Parser<Output = Out>,
+    B: Parser<Output = Out>,
+{
+    type Output = Out;
+
+    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+        match self {
+            Either::A(inner) => inner.parse(input, pos),
+            Either::B(inner) => inner.parse(input, pos),
+        }
     }
 }
 

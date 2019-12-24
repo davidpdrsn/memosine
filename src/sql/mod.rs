@@ -1,9 +1,14 @@
 use parse::*;
+use std::collections::HashMap;
 use std::fmt;
 
 mod parse;
 
-pub use parse::parse;
+pub use parse::ParseError;
+
+pub fn parse_sql_query(query: &str) -> Result<Statement, ParseError> {
+    parse(&Statement::parser(), query)
+}
 
 static KEYWORDS: &[&'static str] = &["select", "from"];
 
@@ -13,19 +18,26 @@ pub enum Statement {
     // Insert(Insert),
     // Update(Update),
     // Delete(Delete),
+    CreateTable(CreateTable),
+    // DropTable(DropTable),
+    // AlterTable(AlterTable),
 }
 
 impl fmt::Display for Statement {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Statement::Select(inner) => write!(f, "{}", inner),
+            Statement::CreateTable(inner) => write!(f, "{}", inner),
         }
     }
 }
 
 impl Statement {
     pub fn parser() -> impl Parser<Output = Self> {
-        let parser = Select::parser().map(Statement::Select);
+        let select = Select::parser().map(Statement::Select);
+        let create_table = CreateTable::parser().map(Statement::CreateTable);
+
+        let parser = select.or(create_table);
 
         whitespace().zip_right(parser).zip_left(whitespace())
     }
@@ -143,9 +155,9 @@ impl Parser for SourceParser {
 
 #[derive(Debug, Clone)]
 pub struct Join {
-    ty: JoinType,
-    source: Source,
-    where_clause: WhereClause,
+    pub ty: JoinType,
+    pub source: Source,
+    pub where_clause: WhereClause,
 }
 
 impl fmt::Display for Join {
@@ -184,7 +196,7 @@ impl Join {
 }
 
 #[derive(Debug, Clone)]
-enum JoinType {
+pub enum JoinType {
     Inner,
     Outer,
 }
@@ -197,8 +209,8 @@ pub struct OuterJoin {
 
 #[derive(Debug, Clone)]
 pub enum Column {
-    Relative(ColumnIdent),
-    Absolute { table: Ident, column: ColumnIdent },
+    Relative(SelectedColumn),
+    Absolute { table: Ident, column: SelectedColumn },
 }
 
 impl fmt::Display for Column {
@@ -212,11 +224,11 @@ impl fmt::Display for Column {
 
 impl Column {
     fn parser() -> impl Parser<Output = Self> {
-        let relative = ColumnIdent::parser().map(|ident| Column::Relative(ident));
+        let relative = SelectedColumn::parser().map(|ident| Column::Relative(ident));
 
         let absolute = Ident::parser()
             .zip_left(char('.'))
-            .zip(ColumnIdent::parser())
+            .zip(SelectedColumn::parser())
             .map(|(table, column)| Column::Absolute { table, column });
 
         absolute.or(relative)
@@ -224,24 +236,24 @@ impl Column {
 }
 
 #[derive(Debug, Clone)]
-pub enum ColumnIdent {
+pub enum SelectedColumn {
     Ident(Ident),
     Star(Star),
 }
 
-impl fmt::Display for ColumnIdent {
+impl fmt::Display for SelectedColumn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ColumnIdent::Ident(inner) => write!(f, "{}", inner),
-            ColumnIdent::Star(inner) => write!(f, "{}", inner),
+            SelectedColumn::Ident(inner) => write!(f, "{}", inner),
+            SelectedColumn::Star(inner) => write!(f, "{}", inner),
         }
     }
 }
 
-impl ColumnIdent {
+impl SelectedColumn {
     fn parser() -> impl Parser<Output = Self> {
-        let ident = Ident::parser().map(|ident| ColumnIdent::Ident(ident));
-        let star = char('*').map(|_| ColumnIdent::Star(Star));
+        let ident = Ident::parser().map(|ident| SelectedColumn::Ident(ident));
+        let star = char('*').map(|_| SelectedColumn::Star(Star));
         ident.or(star)
     }
 }
@@ -255,7 +267,7 @@ impl fmt::Display for Star {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub struct Ident {
     value: String,
 }
@@ -267,6 +279,12 @@ impl fmt::Display for Ident {
 }
 
 impl Ident {
+    fn new(value: &str) -> Self {
+        Ident {
+            value: value.to_string(),
+        }
+    }
+
     fn parser() -> impl Parser<Output = Self> {
         let ident_char =
             any_char().when(|c| !c.is_whitespace() && (c.is_alphanumeric() || c == &'_'));
@@ -405,7 +423,7 @@ impl Expr {
 
 #[derive(Debug, Clone)]
 pub enum Literal {
-    Int(i32),
+    Int(i64),
 }
 
 impl fmt::Display for Literal {
@@ -424,6 +442,89 @@ impl Literal {
         });
 
         int
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateTable {
+    name: Ident,
+    id: (Ident, Type),
+    columns: HashMap<Ident, Type>,
+}
+
+impl fmt::Display for CreateTable {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "create table {} (", self.name)?;
+        for (col, ty) in &self.columns {
+            writeln!(f, "  {} {},", col, ty)?;
+        }
+        writeln!(f, ")")?;
+
+        Ok(())
+    }
+}
+
+impl CreateTable {
+    fn parser() -> impl Parser<Output = Self> {
+        let column_parser = Ident::parser().whitespace().zip(Type::parser());
+
+        string("create")
+            .whitespace()
+            .zip_right(string("table"))
+            .whitespace()
+            .zip_right(Ident::parser())
+            .whitespace()
+            .zip_left(char('('))
+            .whitespace()
+            .zip(column_parser.sep_by_allow_trailing(char(',').whitespace()))
+            .zip_left(char(')'))
+            .and_then(|(name, columns)| {
+                let mut columns = columns.into_iter().collect::<HashMap<_, _>>();
+                let id_ident = Ident::new("id");
+                if let Some(id_ty) = columns.remove(&id_ident) {
+                    Either::A(pure(CreateTable {
+                        name,
+                        columns,
+                        id: (id_ident, id_ty),
+                    }))
+                } else {
+                    Either::B(error(format!(
+                        "Cannot create `{}` table since it doesn't have an id column",
+                        name
+                    )))
+                }
+            })
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Type {
+    Named(Ident),
+    Option(Ident),
+}
+
+impl Type {
+    fn parser() -> impl Parser<Output = Self> {
+        let named = Ident::parser().map(|id| Type::Named(id));
+        let option = string("Option")
+            .whitespace()
+            .zip(char('<'))
+            .whitespace()
+            .zip_right(Ident::parser())
+            .whitespace()
+            .zip_left(char('>'))
+            .map(|id| Type::Option(id));
+
+        option.or(named)
+    }
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Type::Named(ident) => write!(f, "{}", ident),
+            Type::Option(ty) => write!(f, "Option<{}>", ty),
+        }
     }
 }
 
@@ -562,6 +663,19 @@ mod test {
                     and 1 = 1
                     or (2 < 1 and 1 <= users.id)
                     or (2 > 1 and 1 >= users.id)
+            "#,
+        );
+    }
+
+    #[test]
+    fn create_table() {
+        test_parse(
+            r#"
+                create table users (
+                    id Int,
+                    country_id Option<Int>,
+                    name String,
+                )
             "#,
         );
     }
