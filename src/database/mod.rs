@@ -106,25 +106,24 @@ impl Database {
         Ok(())
     }
 
-    pub fn run_select<'a>(&'a self, stmt: Select) -> Result<SelectOutput<'a>> {
+    pub fn run_select(&self, stmt: Select) -> Result<SelectOutput> {
         assert!(stmt.where_clause.is_none(), "where clauses not supported");
         assert!(stmt.joins.is_empty(), "joins not supported");
 
         let mut output = SelectOutput::default();
 
-        match &stmt.source {
+        let row_candidates = match &stmt.source {
             Source::Table(table) => {
                 let table = self.get_table(table)?;
+                output.set_header(table);
+
+                let mut row_candidates = Vec::<usize>::new();
 
                 for selection in &stmt.columns {
                     match selection {
                         Column::Relative(column) => match column {
                             RelativeColumn::Ident(column) => unimplemented!("ident"),
-                            RelativeColumn::Star(_) => {
-                                output.set_header(table);
-                                let row = table.rows.iter().map(|idx| &self.all_rows[*idx]);
-                                output.rows.extend(row);
-                            }
+                            RelativeColumn::Star(_) => row_candidates.extend(&table.rows),
                         },
 
                         Column::Absolute(AbsoluteColumn {
@@ -139,20 +138,19 @@ impl Database {
 
                             match column {
                                 RelativeColumn::Ident(column) => unimplemented!("ident absolute"),
-                                RelativeColumn::Star(_) => {
-                                    output.set_header(table);
-                                    let row = table.rows.iter().map(|idx| &self.all_rows[*idx]);
-                                    output.rows.extend(row);
-                                }
+                                RelativeColumn::Star(_) => row_candidates.extend(&table.rows),
                             }
                         }
                     }
                 }
 
-                &table.rows
+                row_candidates
             }
             Source::Query { query, alias } => unimplemented!("sub queries not supported"),
         };
+
+        let row = row_candidates.iter().map(|idx| &self.all_rows[*idx]);
+        output.rows.extend(row);
 
         Ok(output)
     }
@@ -218,18 +216,16 @@ pub struct SelectOutput<'a> {
 
 impl<'a> SelectOutput<'a> {
     fn set_header(&mut self, table: &Table) {
-        self
-            .columns
-            .extend(
-                table
-                    .schema
-                    .columns()
-                    .into_iter()
-                    .map(|(ident, _)| AbsoluteColumn {
-                        table: table.name.clone(),
-                        column: RelativeColumn::Ident(ident.clone()),
-                    }),
-            );
+        self.columns.extend(
+            table
+                .schema
+                .columns()
+                .into_iter()
+                .map(|(ident, _)| AbsoluteColumn {
+                    table: table.name.clone(),
+                    column: RelativeColumn::Ident(ident.clone()),
+                }),
+        );
     }
 }
 
