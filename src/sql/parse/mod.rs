@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::utils::Either;
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -787,12 +788,6 @@ where
             input,
         })
     }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum Either<A, B> {
-    A(A),
-    B(B),
 }
 
 impl<A, B, Out> Parser for Either<A, B>

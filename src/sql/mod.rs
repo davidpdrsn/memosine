@@ -1,10 +1,12 @@
 use crate::schema::Type;
+use crate::utils::Either;
 use parse::*;
 use std::collections::HashMap;
 use std::fmt;
 
 mod parse;
 
+use crate::database::Value;
 pub use parse::ParseError;
 
 pub fn parse_sql_query(query: &str) -> Result<Statement, ParseError> {
@@ -15,7 +17,9 @@ pub fn parse_sql_queries(query: &str) -> Result<Vec<Statement>, ParseError> {
     parse(&many(Statement::parser()), query)
 }
 
-static KEYWORDS: &[&'static str] = &["select", "from"];
+static KEYWORDS: &[&str] = &[
+    "select", "from", "join", "inner", "outer", "where", "and", "or",
+];
 
 #[derive(Debug)]
 pub enum Statement {
@@ -224,54 +228,63 @@ pub struct OuterJoin {
 
 #[derive(Debug, Clone)]
 pub enum Column {
-    Relative(SelectedColumn),
-    Absolute {
-        table: Ident,
-        column: SelectedColumn,
-    },
+    Relative(RelativeColumn),
+    Absolute(AbsoluteColumn),
 }
 
 impl fmt::Display for Column {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Column::Relative(inner) => write!(f, "{}", inner),
-            Column::Absolute { table, column } => write!(f, "{}.{}", table, column),
+            Column::Absolute(inner) => write!(f, "{}", inner),
         }
     }
 }
 
 impl Column {
     fn parser() -> impl Parser<Output = Self> {
-        let relative = SelectedColumn::parser().map(|ident| Column::Relative(ident));
+        let relative = RelativeColumn::parser().map(|ident| Column::Relative(ident));
 
         let absolute = Ident::parser()
             .zip_left(char('.'))
-            .zip(SelectedColumn::parser())
-            .map(|(table, column)| Column::Absolute { table, column });
+            .zip(RelativeColumn::parser())
+            .map(|(table, column)| Column::Absolute(AbsoluteColumn { table, column }));
 
         absolute.or(relative)
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum SelectedColumn {
+pub struct AbsoluteColumn {
+    pub table: Ident,
+    pub column: RelativeColumn,
+}
+
+impl fmt::Display for AbsoluteColumn {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}.{}", self.table, self.column)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum RelativeColumn {
     Ident(Ident),
     Star(Star),
 }
 
-impl fmt::Display for SelectedColumn {
+impl fmt::Display for RelativeColumn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            SelectedColumn::Ident(inner) => write!(f, "{}", inner),
-            SelectedColumn::Star(inner) => write!(f, "{}", inner),
+            RelativeColumn::Ident(inner) => write!(f, "{}", inner),
+            RelativeColumn::Star(inner) => write!(f, "{}", inner),
         }
     }
 }
 
-impl SelectedColumn {
+impl RelativeColumn {
     fn parser() -> impl Parser<Output = Self> {
-        let ident = Ident::parser().map(|ident| SelectedColumn::Ident(ident));
-        let star = char('*').map(|_| SelectedColumn::Star(Star));
+        let ident = Ident::parser().map(|ident| RelativeColumn::Ident(ident));
+        let star = char('*').map(|_| RelativeColumn::Star(Star));
         ident.or(star)
     }
 }
@@ -297,7 +310,7 @@ impl fmt::Display for Ident {
 }
 
 impl Ident {
-    fn new(value: &str) -> Self {
+    pub fn new(value: &str) -> Self {
         Ident {
             value: value.to_string(),
         }
@@ -311,6 +324,18 @@ impl Ident {
             .map(|chars| chars.iter().collect::<String>())
             .when(|value| !KEYWORDS.contains(&value.as_str()))
             .map(|value| Ident { value })
+    }
+}
+
+impl PartialEq<str> for Ident {
+    fn eq(&self, other: &str) -> bool {
+        self.value == other
+    }
+}
+
+impl<'a> PartialEq<str> for &'a Ident {
+    fn eq(&self, other: &str) -> bool {
+        self.value == other
     }
 }
 
@@ -418,14 +443,14 @@ impl Parser for WhereClauseParser {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Column(Column),
-    Literal(Literal),
+    Value(Value),
 }
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Expr::Column(inner) => write!(f, "{}", inner),
-            Expr::Literal(inner) => write!(f, "{}", inner),
+            Expr::Value(inner) => write!(f, "{}", inner),
         }
     }
 }
@@ -433,39 +458,33 @@ impl fmt::Display for Expr {
 impl Expr {
     fn parser() -> impl Parser<Output = Self> {
         let column = Column::parser().map(|col| Expr::Column(col));
-        let literal = Literal::parser().map(|lit| Expr::Literal(lit));
+        let value = Value::parser().map(|lit| Expr::Value(lit));
 
-        column.or(literal)
+        column.or(value)
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum Literal {
-    Int(i64),
-    String(String),
-}
-
-impl fmt::Display for Literal {
+impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Literal::Int(inner) => write!(f, "{}", inner),
-            Literal::String(inner) => write!(f, "{:?}", inner),
+            Value::Int(inner) => write!(f, "{}", inner),
+            Value::String(inner) => write!(f, "{:?}", inner),
         }
     }
 }
 
-impl Literal {
+impl Value {
     fn parser() -> impl Parser<Output = Self> {
         let int = many1(any_char().when(|c| c.is_numeric())).map(|digits| {
             let digits = digits.iter().collect::<String>().parse().unwrap();
-            Literal::Int(digits)
+            Value::Int(digits)
         });
 
         let string = char('"')
             .zip_right(many(any_char().when(|c| c != &'"')))
             .zip_left(char('"'))
             .map(|chars| chars.iter().collect::<String>())
-            .map(|s| Literal::String(s));
+            .map(|s| Value::String(s));
 
         int.or(string).whitespace()
     }
@@ -473,9 +492,9 @@ impl Literal {
 
 #[derive(Debug, Clone)]
 pub struct CreateTable {
-    name: Ident,
-    id: (Ident, Type),
-    columns: HashMap<Ident, Type>,
+    pub name: Ident,
+    pub id: (Ident, Type),
+    pub columns: HashMap<Ident, Type>,
 }
 
 impl fmt::Display for CreateTable {
@@ -541,8 +560,8 @@ impl Type {
 
 #[derive(Debug, Clone)]
 pub struct Insert {
-    table: Ident,
-    values: Vec<(Ident, Literal)>,
+    pub table: Ident,
+    pub values: HashMap<Ident, Value>,
 }
 
 impl Insert {
@@ -551,7 +570,7 @@ impl Insert {
             .whitespace()
             .zip_left(char('='))
             .whitespace()
-            .zip(Literal::parser());
+            .zip(Value::parser());
 
         string("insert")
             .whitespace()
@@ -561,7 +580,11 @@ impl Insert {
             .whitespace()
             .zip_left(char('('))
             .whitespace()
-            .zip(value_parser.sep_by_allow_trailing(char(',').whitespace()))
+            .zip(
+                value_parser
+                    .sep_by_allow_trailing(char(',').whitespace())
+                    .map(|values| values.into_iter().collect::<HashMap<_, _>>()),
+            )
             .zip_left(char(')'))
             .map(|(table, values)| Insert { table, values })
     }
