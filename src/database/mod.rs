@@ -1,11 +1,12 @@
-mod byte_conversion;
-
 use crate::error::{Error, Result};
 use crate::schema::{self, Schema, Type};
 use crate::sql::{
-    AbsoluteColumn, Column, CreateTable, Ident, Insert, RelativeColumn, Select, Source,
+    self, Column, CreateTable, Ident, Insert, RelativeColumn, Select, Source,
 };
+use crate::utils::ExtendOrSet;
 use crate::utils::{Arena, Id, IdMap};
+use std::borrow::Borrow;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::iter::FromIterator;
@@ -16,7 +17,6 @@ use std::sync::atomic::Ordering;
 pub struct Database {
     tables: IdMap<Table>,
     all_rows: Arena<Row>,
-    prev_id: AtomicI64,
 }
 
 impl Database {
@@ -24,13 +24,7 @@ impl Database {
         Self {
             tables: IdMap::new(),
             all_rows: Arena::new(),
-            prev_id: AtomicI64::new(0),
         }
-    }
-
-    fn next_id(&self) -> i64 {
-        let next_id = self.prev_id.fetch_add(1, Ordering::SeqCst);
-        next_id + 1
     }
 
     pub fn run_create_table(&mut self, stmt: CreateTable) -> Result<()> {
@@ -46,6 +40,7 @@ impl Database {
             name,
             rows: Vec::new(),
             schema,
+            prev_id: AtomicI64::new(0),
         };
         self.tables.insert(table);
 
@@ -54,12 +49,11 @@ impl Database {
 
     pub fn run_insert(&mut self, mut stmt: Insert) -> Result<()> {
         let row = {
-            let table = self
-                .tables
-                .get(&stmt.table)
-                .ok_or_else(|| Error::UndefinedTable {
+            let table = self.tables.get(&stmt.table).ok_or_else(|| {
+                Error::UndefinedTable {
                     name: stmt.table.clone(),
-                })?;
+                }
+            })?;
             let table_schema = &table.schema;
 
             table_schema
@@ -67,14 +61,15 @@ impl Database {
                 .into_iter()
                 .map(|(column_name, column_type)| {
                     if column_name == "id" {
-                        Ok(Value::Int(self.next_id()))
+                        Ok(Value::Int(table.next_id()))
                     } else {
-                        let value = stmt.values.remove(column_name).ok_or_else(|| {
-                            Error::UndefinedColumn {
+                        let value = stmt
+                            .values
+                            .remove(column_name)
+                            .ok_or_else(|| Error::UndefinedColumn {
                                 table_name: table.name.clone(),
                                 column_name: column_name.clone(),
-                            }
-                        })?;
+                            })?;
 
                         let value_type = value.ty();
 
@@ -93,12 +88,11 @@ impl Database {
                 .collect::<Result<Row>>()?
         };
 
-        let table = self
-            .tables
-            .get_mut(&stmt.table)
-            .ok_or_else(|| Error::UndefinedTable {
+        let table = self.tables.get_mut(&stmt.table).ok_or_else(|| {
+            Error::UndefinedTable {
                 name: stmt.table.clone(),
-            })?;
+            }
+        })?;
 
         let row_idx = self.all_rows.push(row);
         table.rows.push(row_idx);
@@ -106,56 +100,225 @@ impl Database {
         Ok(())
     }
 
-    pub fn run_select(&self, stmt: Select) -> Result<SelectOutput> {
-        assert!(stmt.where_clause.is_none(), "where clauses not supported");
-        assert!(stmt.joins.is_empty(), "joins not supported");
+    pub fn run_select(&self, stmt: &Select) -> Result<Projection> {
+        assert!(stmt.joins.len() == 0, "joins are not supported");
+        assert!(stmt.where_clause.is_none(), "where clauses are not supported");
 
-        let mut output = SelectOutput::default();
+        let full_projection = {
+            let mut full_projection = Projection::default();
 
-        let row_candidates = match &stmt.source {
-            Source::Table(table) => {
-                let table = self.get_table(table)?;
-                output.set_header(table);
+            let rows = match &stmt.source {
+                Source::Table(table_name) => {
+                    let table = self.get_table(table_name)?;
+                    full_projection
+                        .extend_header_with_columns_from_table(table);
+                    table.rows.iter().map(|idx| &self.all_rows[*idx])
+                }
+                other => todo!("{:?}", other),
+            };
+            full_projection.extend_rows(rows);
 
-                let mut row_candidates = Vec::<usize>::new();
+            full_projection
+        };
 
-                for selection in &stmt.columns {
-                    match selection {
-                        Column::Relative(column) => match column {
-                            RelativeColumn::Ident(column) => unimplemented!("ident"),
-                            RelativeColumn::Star(_) => row_candidates.extend(&table.rows),
-                        },
+        let mut projection = Projection::default();
 
-                        Column::Absolute(AbsoluteColumn {
-                            table: table_name,
-                            column,
-                        }) => {
-                            assert!(
-                                table_name == &table.name,
-                                "`{}` is not part of from clause",
-                                table_name
+        // NOTE: looping over full_projection.rows for each selected column seems is probably slow
+        for selected_column in &stmt.columns {
+            match selected_column {
+                Column::Absolute(absolute) => {
+                    let table_name = &absolute.table;
+
+                    match &absolute.column {
+                        sql::RelativeColumn::Star(_) => {
+                            let (cell_idxs, columns) = full_projection
+                                .header
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, column)| {
+                                    &column.table == table_name
+                                })
+                                .unzip::<_, _, Vec<_>, Vec<_>>();
+
+                            // extend header
+                            projection.header.extend(
+                                columns.iter().map(|col| (*col).clone()),
                             );
 
-                            match column {
-                                RelativeColumn::Ident(column) => unimplemented!("ident absolute"),
-                                RelativeColumn::Star(_) => row_candidates.extend(&table.rows),
+                            // extend rows
+                            if projection.rows.is_empty() {
+                                let rows = full_projection
+                                    .rows
+                                    .iter()
+                                    .map(|row| {
+                                        cell_idxs
+                                            .iter()
+                                            .map(move |idx| {
+                                                row.values[*idx].clone()
+                                            })
+                                            .collect::<Row>()
+                                    })
+                                    .map(Cow::Owned)
+                                    .collect::<Vec<_>>();
+
+                                projection.rows.extend(rows);
+                            } else {
+                                full_projection
+                                    .rows
+                                    .iter()
+                                    .zip(&mut projection.rows)
+                                    .for_each(|(full_row, projected_row)| {
+                                        let projected_row =
+                                            projected_row.to_mut();
+                                        let values =
+                                            cell_idxs.iter().map(|cell_idx| {
+                                                full_row.values[*cell_idx]
+                                                    .clone()
+                                            });
+                                        projected_row.values.extend(values);
+                                    });
+                            }
+                        }
+                        sql::RelativeColumn::Ident(column_name) => {
+                            let mut matching_columns = full_projection
+                                .header
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, name)| {
+                                    &name.table == table_name
+                                        && &name.column == column_name
+                                })
+                                .collect::<Vec<_>>();
+
+                            match matching_columns.len() {
+                                0 => todo!("undefined column"),
+                                1 => {
+                                    let (cell_idx, column_name) =
+                                        matching_columns.remove(0);
+
+                                    // extend header
+                                    projection.header.push(column_name.clone());
+
+                                    // extend rows
+                                    if projection.rows.is_empty() {
+                                        for row in &full_projection.rows {
+                                            let value =
+                                                row.values[cell_idx].clone();
+                                            let row = Row {
+                                                values: vec![value],
+                                            };
+                                            projection
+                                                .rows
+                                                .push(Cow::Owned(row));
+                                        }
+                                    } else {
+                                        full_projection
+                                            .rows
+                                            .iter()
+                                            .zip(&mut projection.rows)
+                                            .for_each(
+                                                |(full_row, projected_row)| {
+                                                    let projected_row =
+                                                        projected_row.to_mut();
+                                                    let value = full_row.values
+                                                        [cell_idx]
+                                                        .clone();
+                                                    projected_row
+                                                        .values
+                                                        .push(value);
+                                                },
+                                            );
+                                    }
+                                }
+                                _ => todo!("what does this mean?"),
                             }
                         }
                     }
                 }
+                Column::Relative(relative) => match relative {
+                    RelativeColumn::Star(_) => {
+                        // extend header
+                        projection
+                            .header
+                            .extend(full_projection.header.iter().cloned());
 
-                row_candidates
+                        // extend rows
+                        if projection.rows.is_empty() {
+                            projection
+                                .rows
+                                .extend(full_projection.rows.iter().cloned());
+                        } else {
+                            full_projection
+                                .rows
+                                .iter()
+                                .zip(&mut projection.rows)
+                                .for_each(|(full_row, projected_row)| {
+                                    let projected_row = projected_row.to_mut();
+                                    projected_row.values.extend(
+                                        full_row.values.iter().cloned(),
+                                    );
+                                });
+                        }
+                    }
+                    RelativeColumn::Ident(column_name) => {
+                        let mut matching_columns = full_projection
+                            .header
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, name)| &name.column == column_name)
+                            .collect::<Vec<_>>();
+
+                        match matching_columns.len() {
+                            0 => todo!("undefined column"),
+                            1 => {
+                                let (cell_idx, column_name) =
+                                    matching_columns.remove(0);
+
+                                // extend header
+                                projection.header.push(column_name.clone());
+
+                                // extend rows
+                                if projection.rows.is_empty() {
+                                    for row in &full_projection.rows {
+                                        let value =
+                                            row.values[cell_idx].clone();
+                                        let row = Row {
+                                            values: vec![value],
+                                        };
+                                        projection.rows.push(Cow::Owned(row));
+                                    }
+                                } else {
+                                    full_projection
+                                        .rows
+                                        .iter()
+                                        .zip(&mut projection.rows)
+                                        .for_each(
+                                            |(full_row, projected_row)| {
+                                                let projected_row =
+                                                    projected_row.to_mut();
+                                                let value = full_row.values
+                                                    [cell_idx]
+                                                    .clone();
+                                                projected_row
+                                                    .values
+                                                    .push(value);
+                                            },
+                                        );
+                                }
+                            }
+                            _ => {
+                                todo!("unambiguous relative column projection")
+                            }
+                        }
+                    }
+                },
             }
-            Source::Query { query, alias } => unimplemented!("sub queries not supported"),
-        };
+        }
 
-        let row = row_candidates.iter().map(|idx| &self.all_rows[*idx]);
-        output.rows.extend(row);
-
-        Ok(output)
+        Ok(projection)
     }
 
-    fn get_table(&self, name: &Ident) -> Result<&Table> {
+    pub fn get_table(&self, name: &Ident) -> Result<&Table> {
         self.tables
             .get(name)
             .ok_or_else(|| Error::UndefinedTable { name: name.clone() })
@@ -163,10 +326,18 @@ impl Database {
 }
 
 #[derive(Debug)]
-struct Table {
-    name: Ident,
-    rows: Vec<usize>,
-    schema: schema::Table,
+pub struct Table {
+    pub name: Ident,
+    pub rows: Vec<usize>,
+    pub schema: schema::Table,
+    prev_id: AtomicI64,
+}
+
+impl Table {
+    fn next_id(&self) -> i64 {
+        let next_id = self.prev_id.fetch_add(1, Ordering::SeqCst);
+        next_id + 1
+    }
 }
 
 impl Id for Table {
@@ -177,7 +348,7 @@ impl Id for Table {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Row {
     values: Vec<Value>,
 }
@@ -193,7 +364,7 @@ impl FromIterator<Value> for Row {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Value {
     Int(i64),
     String(String),
@@ -208,34 +379,75 @@ impl Value {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct SelectOutput<'a> {
-    pub columns: Vec<AbsoluteColumn>,
-    pub rows: Vec<&'a Row>,
-}
-
-impl<'a> SelectOutput<'a> {
-    fn set_header(&mut self, table: &Table) {
-        self.columns.extend(
-            table
-                .schema
-                .columns()
-                .into_iter()
-                .map(|(ident, _)| AbsoluteColumn {
-                    table: table.name.clone(),
-                    column: RelativeColumn::Ident(ident.clone()),
-                }),
-        );
+impl From<i64> for Value {
+    fn from(x: i64) -> Value {
+        Value::Int(x)
     }
 }
 
-impl<'a> SelectOutput<'a> {
+impl<'a> From<&'a str> for Value {
+    fn from(x: &'a str) -> Value {
+        Value::String(x.to_string())
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<i64> for &Value {
+    fn eq(&self, other: &i64) -> bool {
+        &&Value::from(*other) == self
+    }
+}
+
+#[cfg(test)]
+impl<'a> PartialEq<&'a str> for Value {
+    fn eq(&self, other: &&'a str) -> bool {
+        &Value::from(*other) == self
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Projection<'a> {
+    pub header: Vec<AbsoluteColumn>,
+    pub rows: Vec<Cow<'a, Row>>,
+}
+
+impl<'a> Projection<'a> {
+    fn extend_header_with_columns_from_table(&mut self, table: &Table) {
+        let columns = table.schema.columns().into_iter().map(|(ident, _)| {
+            AbsoluteColumn {
+                table: table.name.clone(),
+                column: ident.clone(),
+            }
+        });
+        self.header.extend(columns);
+    }
+
+    fn extend_rows<I>(&mut self, rows: I)
+    where
+        I: IntoIterator<Item = &'a Row>,
+    {
+        self.rows.extend(rows.into_iter().map(Cow::Borrowed));
+    }
+
+    #[cfg(test)]
+    pub fn to_tuples(self) -> Vec<(AbsoluteColumn, Value)> {
+        let mut acc = vec![];
+        for row in self.rows {
+            let row = row.into_owned();
+            for (idx, value) in row.values.into_iter().enumerate() {
+                let column = self.header[idx].clone();
+                acc.push((column, value));
+            }
+        }
+        acc
+    }
+
     pub fn tsv(&'a self) -> Tsv<'a> {
         Tsv(self)
     }
 }
 
-pub struct Tsv<'a>(&'a SelectOutput<'a>);
+pub struct Tsv<'a>(&'a Projection<'a>);
 
 impl<'a> fmt::Display for Tsv<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -243,7 +455,7 @@ impl<'a> fmt::Display for Tsv<'a> {
             f,
             "{}",
             self.0
-                .columns
+                .header
                 .iter()
                 .map(|c| format!("{}", c))
                 .collect::<Vec<_>>()
@@ -263,5 +475,28 @@ impl<'a> fmt::Display for Tsv<'a> {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AbsoluteColumn {
+    pub table: Ident,
+    pub column: Ident,
+}
+
+impl fmt::Display for AbsoluteColumn {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}.{}", self.table, self.column)
+    }
+}
+
+#[cfg(test)]
+impl<'a> From<&'a str> for AbsoluteColumn {
+    fn from(other: &'a str) -> Self {
+        let mut parts = other.split(".").collect::<Vec<_>>();
+        let table = Ident::new(parts.remove(0));
+        let column = Ident::new(parts.remove(0));
+        assert!(parts.is_empty());
+        AbsoluteColumn { table, column }
     }
 }

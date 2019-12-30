@@ -1,9 +1,11 @@
 use crate::sql::Ident;
+use extend::ext;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::iter::FromIterator;
 use std::iter::Iterator;
 use std::ops::Index;
+use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Either<A, B> {
@@ -107,4 +109,22 @@ impl<T> Index<usize> for Arena<T> {
     fn index(&self, idx: usize) -> &Self::Output {
         &self.items[idx]
     }
+}
+
+#[ext(pub, name = ExtendOrSet)]
+impl<T> Vec<T> {
+    fn extend_or_set<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        if self.is_empty() {
+            *self = iter.into_iter().collect();
+        } else {
+            self.extend(iter)
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! dot {
+    ($name:ident) => {
+        |x| x.$name()
+    };
 }

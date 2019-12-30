@@ -8,7 +8,10 @@ mod pos;
 
 pub use pos::Pos;
 
-pub fn parse<'a, P>(parser: &P, input: &'a str) -> Result<P::Output, ParseError<'a>>
+pub fn parse<'a, P>(
+    parser: &P,
+    input: &'a str,
+) -> Result<P::Output, ParseError<'a>>
 where
     P: Parser,
 {
@@ -29,7 +32,11 @@ pub type ParseResult<'a, T> = std::result::Result<(T, Pos), ParseError<'a>>;
 pub trait Parser: Sized {
     type Output;
 
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output>;
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output>;
 
     #[inline]
     fn map<F, T>(self, f: F) -> Map<Self, F>
@@ -190,7 +197,9 @@ impl<'a> fmt::Display for ParseError<'a> {
         use ParseError::*;
 
         match self {
-            Named { name, inner } => write!(f, "\"{}\" failed with msg: {}", name, inner),
+            Named { name, inner } => {
+                write!(f, "\"{}\" failed with msg: {}", name, inner)
+            }
             Message { msg, input, pos } => {
                 if let Some(string) = input.from(*pos) {
                     write!(f, "{} at {:?}", msg, string)
@@ -263,7 +272,11 @@ impl<P: Parser> Parser for DebugParser<P> {
     type Output = P::Output;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         eprintln!("{}", self.0);
         self.1.parse(input, pos)
     }
@@ -276,7 +289,11 @@ impl<P: Parser> Parser for Named<P> {
     type Output = P::Output;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         match self.1.parse(input, pos) {
             Ok(x) => Ok(x),
             Err(err) => Err(ParseError::Named {
@@ -298,7 +315,11 @@ where
     type Output = T;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let (out, pos) = self.0.parse(input, pos)?;
         Ok(((self.1)(out), pos))
     }
@@ -316,7 +337,11 @@ where
     type Output = P2::Output;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let (output, new_pos) = self.0.parse(input, pos)?;
         let p2 = (self.1)(output);
         p2.parse(input, new_pos)
@@ -334,7 +359,11 @@ where
     type Output = Out;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         match self.0.parse(input, pos) {
             Ok(x) => Ok(x),
             _ => self.1.parse(input, pos),
@@ -353,7 +382,11 @@ impl<P: Parser> Parser for Maybe<P> {
     type Output = Option<P::Output>;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         match self.0.parse(input, pos) {
             Ok((out, new_pos)) => Ok((Some(out), new_pos)),
             Err(_) => Ok((None, pos)),
@@ -372,7 +405,11 @@ impl Parser for Char {
     type Output = char;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let head = input
             .at(pos)
             .ok_or_else(|| ParseError::UnexpectedEndOfInput { pos, input })?;
@@ -402,7 +439,11 @@ where
     type Output = (P1::Output, P2::Output);
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let (a, new_pos) = self.0.parse(input, pos)?;
         let (b, new_new_pos) = self.1.parse(input, new_pos)?;
         Ok(((a, b), new_new_pos))
@@ -420,7 +461,11 @@ where
     type Output = P1::Output;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let (a, new_pos) = self.0.parse(input, pos)?;
         let (_, new_new_pos) = self.1.parse(input, new_pos)?;
         Ok((a, new_new_pos))
@@ -438,7 +483,11 @@ where
     type Output = P2::Output;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let (_, new_pos) = self.0.parse(input, pos)?;
         let (b, new_new_pos) = self.1.parse(input, new_pos)?;
         Ok((b, new_new_pos))
@@ -462,7 +511,11 @@ where
     type Output = Vec<P::Output>;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let init = Ok((Vec::<P::Output>::new(), pos));
         self.0.iter().fold(init, |acc, parser| {
             let (mut items, pos) = acc?;
@@ -507,13 +560,20 @@ impl Parser for StringParser {
     type Output = String;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         if let Some(sub_input) = input.from(pos) {
             if sub_input.starts_with(&self.0) {
                 Ok((self.0.clone(), pos + self.0.len()))
             } else {
                 Err(ParseError::Message {
-                    msg: format!("Expected {:?}, found {:?}", self.0, sub_input),
+                    msg: format!(
+                        "Expected {:?}, found {:?}",
+                        self.0, sub_input
+                    ),
                     pos,
                     input,
                 })
@@ -538,7 +598,11 @@ impl<P: Parser> Parser for Many<P> {
     type Output = Vec<P::Output>;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, mut pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        mut pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let mut acc = vec![];
 
         loop {
@@ -567,7 +631,11 @@ impl<P: Parser> Parser for Many1<P> {
     type Output = Vec<P::Output>;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let (item, mut pos) = self.0.parse(input, pos)?;
         let mut acc = vec![item];
         loop {
@@ -589,7 +657,11 @@ impl<P: Parser> Parser for Times<P> {
     type Output = Vec<P::Output>;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, mut pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        mut pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let mut n = self.1;
         let mut acc = vec![];
 
@@ -617,7 +689,11 @@ impl Parser for AnyChar {
     type Output = char;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let head = input
             .at(pos)
             .ok_or_else(|| ParseError::UnexpectedEndOfInput { pos, input })?;
@@ -641,7 +717,11 @@ where
     type Output = P::Output;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let (out, new_pos) = self.0.parse(input, pos)?;
         if (self.1)(&out) {
             Ok((out, new_pos))
@@ -662,7 +742,11 @@ impl<P: Parser> Parser for PrintRemainingInput<P> {
     type Output = P::Output;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, mut pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        mut pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let (out, new_pos) = self.0.parse(input, pos)?;
         pos = new_pos;
 
@@ -683,7 +767,11 @@ impl<P: Parser> Parser for Whitespace<P> {
     type Output = P::Output;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let (out, mut pos) = self.0.parse(input, pos)?;
 
         loop {
@@ -715,7 +803,11 @@ where
     type Output = Vec<P1::Output>;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, mut pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        mut pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let mut acc = vec![];
         let mut first_round = true;
 
@@ -757,7 +849,11 @@ where
     type Output = P::Output;
 
     #[inline]
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let (out, pos) = self.0.parse(input, pos)?;
         (self.1)(&out);
         Ok((out, pos))
@@ -781,7 +877,11 @@ where
 {
     type Output = T;
 
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         Err(ParseError::Message {
             msg: format!("{}", self.0),
             pos,
@@ -797,7 +897,11 @@ where
 {
     type Output = Out;
 
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         match self {
             Either::A(inner) => inner.parse(input, pos),
             Either::B(inner) => inner.parse(input, pos),
@@ -830,8 +934,9 @@ mod test {
 
     #[test]
     fn test_chaining() {
-        let parser =
-            char('a').and_then(|a| char('b').and_then(move |b| char('c').map(move |c| (a, b, c))));
+        let parser = char('a').and_then(|a| {
+            char('b').and_then(move |b| char('c').map(move |c| (a, b, c)))
+        });
         let parsed = parse(&parser, "abc").unwrap();
         assert_eq!(parsed, ('a', 'b', 'c'))
     }

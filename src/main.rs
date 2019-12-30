@@ -6,11 +6,15 @@ use std::{
     mem,
 };
 
-pub mod error;
+#[cfg(test)]
+mod tests;
+
+#[macro_use]
+pub mod utils;
 pub mod database;
+pub mod error;
 pub mod schema;
 pub mod sql;
-pub mod utils;
 
 macro_rules! or_exit {
     ($e:expr) => {
@@ -20,6 +24,8 @@ macro_rules! or_exit {
         })
     };
 }
+
+// TODO: CLI with structopt, parsing should be possible with existing parse stuff
 
 fn main() {
     let mut query = String::new();
@@ -37,7 +43,7 @@ fn main() {
                 or_exit!(db.run_insert(inner));
             }
             Statement::Select(inner) => {
-                let selection = or_exit!(db.run_select(inner));
+                let selection = or_exit!(db.run_select(&inner));
                 println!("{}", selection.tsv());
             }
         }

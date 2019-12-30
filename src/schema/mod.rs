@@ -87,3 +87,24 @@ impl fmt::Display for Type {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    #[allow(unused_imports)]
+    use super::*;
+    use crate::tests::*;
+
+    #[test]
+    fn schema_is_consistent() {
+        for _ in 0..100 {
+            let db = setup();
+            let users_table = db.get_table(&Ident::new("users")).unwrap();
+            let columns = &users_table.schema.columns();
+            assert_eq!(columns.len(), 4);
+            assert_eq!(&columns[0], &(&Ident::new("id"), &Type::Named(Ident::new("Int"))));
+            assert_eq!(&columns[1], &(&Ident::new("name"), &Type::Named(Ident::new("String"))));
+            assert_eq!(&columns[2], &(&Ident::new("age"), &Type::Named(Ident::new("Int"))));
+            assert_eq!(&columns[3], &(&Ident::new("country_id"), &Type::Named(Ident::new("Int"))));
+        }
+    }
+}

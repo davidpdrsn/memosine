@@ -29,12 +29,20 @@ impl fmt::Display for Error {
         use Error::*;
 
         match self {
-            TableAlreadyDefined { name } => write!(f, "Table `{}` is already defined", name),
-            UndefinedTable { name } => write!(f, "Table `{}` is not defined", name),
+            TableAlreadyDefined { name } => {
+                write!(f, "Table `{}` is already defined", name)
+            }
+            UndefinedTable { name } => {
+                write!(f, "Table `{}` is not defined", name)
+            }
             UndefinedColumn {
                 table_name,
                 column_name,
-            } => write!(f, "Column`{}.{}` is not defined", table_name, column_name),
+            } => write!(
+                f,
+                "Column`{}.{}` is not defined",
+                table_name, column_name
+            ),
             InsertTypeError {
                 table_name,
                 column_name,

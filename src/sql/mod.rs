@@ -99,7 +99,8 @@ impl Select {
             .whitespace()
             .zip_right(list_of(Column::parser()));
 
-        let source_parser = string("from").whitespace().zip_right(Source::parser());
+        let source_parser =
+            string("from").whitespace().zip_right(Source::parser());
 
         let joins_parser = many(Join::parser());
 
@@ -133,7 +134,9 @@ impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Source::Table(inner) => write!(f, "{}", inner),
-            Source::Query { query, alias } => write!(f, "({}) {}", query, alias),
+            Source::Query { query, alias } => {
+                write!(f, "({}) {}", query, alias)
+            }
         }
     }
 }
@@ -150,7 +153,11 @@ struct SourceParser;
 impl Parser for SourceParser {
     type Output = Source;
 
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         let parser = {
             let table = Ident::parser().map(|ident| Source::Table(ident));
 
@@ -243,18 +250,21 @@ impl fmt::Display for Column {
 
 impl Column {
     fn parser() -> impl Parser<Output = Self> {
-        let relative = RelativeColumn::parser().map(|ident| Column::Relative(ident));
+        let relative =
+            RelativeColumn::parser().map(|ident| Column::Relative(ident));
 
         let absolute = Ident::parser()
             .zip_left(char('.'))
             .zip(RelativeColumn::parser())
-            .map(|(table, column)| Column::Absolute(AbsoluteColumn { table, column }));
+            .map(|(table, column)| {
+                Column::Absolute(AbsoluteColumn { table, column })
+            });
 
         absolute.or(relative)
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AbsoluteColumn {
     pub table: Ident,
     pub column: RelativeColumn,
@@ -266,7 +276,7 @@ impl fmt::Display for AbsoluteColumn {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RelativeColumn {
     Ident(Ident),
     Star(Star),
@@ -289,7 +299,7 @@ impl RelativeColumn {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Star;
 
 impl fmt::Display for Star {
@@ -317,8 +327,8 @@ impl Ident {
     }
 
     fn parser() -> impl Parser<Output = Self> {
-        let ident_char =
-            any_char().when(|c| !c.is_whitespace() && (c.is_alphanumeric() || c == &'_'));
+        let ident_char = any_char()
+            .when(|c| !c.is_whitespace() && (c.is_alphanumeric() || c == &'_'));
 
         many1(ident_char)
             .map(|chars| chars.iter().collect::<String>())
@@ -386,17 +396,22 @@ struct WhereClauseParser;
 impl Parser for WhereClauseParser {
     type Output = WhereClause;
 
-    fn parse<'a>(&self, input: &'a str, pos: Pos) -> ParseResult<'a, Self::Output> {
+    fn parse<'a>(
+        &self,
+        input: &'a str,
+        pos: Pos,
+    ) -> ParseResult<'a, Self::Output> {
         {
-            let operator = |op: StringParser, f: fn(Expr, Expr) -> WhereClause| {
-                Expr::parser()
-                    .whitespace()
-                    .zip_left(op)
-                    .whitespace()
-                    .zip(Expr::parser())
-                    .zip_left(maybe(whitespace()))
-                    .map(move |(lhs, rhs)| f(lhs, rhs))
-            };
+            let operator =
+                |op: StringParser, f: fn(Expr, Expr) -> WhereClause| {
+                    Expr::parser()
+                        .whitespace()
+                        .zip_left(op)
+                        .whitespace()
+                        .zip(Expr::parser())
+                        .zip_left(maybe(whitespace()))
+                        .map(move |(lhs, rhs)| f(lhs, rhs))
+                };
 
             let eq = operator(string("="), WhereClause::Eq);
             let not_eq = operator(string("!="), WhereClause::NotEq);
@@ -494,7 +509,7 @@ impl Value {
 pub struct CreateTable {
     pub name: Ident,
     pub id: (Ident, Type),
-    pub columns: HashMap<Ident, Type>,
+    pub columns: Vec<(Ident, Type)>,
 }
 
 impl fmt::Display for CreateTable {
@@ -524,13 +539,25 @@ impl CreateTable {
             .zip(column_parser.sep_by_allow_trailing(char(',').whitespace()))
             .zip_left(char(')'))
             .and_then(|(name, columns)| {
-                let mut columns = columns.into_iter().collect::<HashMap<_, _>>();
+                let mut columns = columns.into_iter().collect::<Vec<_>>();
+
                 let id_ident = Ident::new("id");
-                if let Some(id_ty) = columns.remove(&id_ident) {
+                let mut id_ty = None;
+                let mut non_id_columns = Vec::with_capacity(columns.len() - 1);
+
+                for (name, ty) in columns.drain(..) {
+                  if name == id_ident {
+                    id_ty = Some(ty);
+                  } else {
+                    non_id_columns.push((name, ty));
+                  }
+                }
+
+                if let Some(id_ty) = id_ty {
                     Either::A(pure(CreateTable {
                         name,
-                        columns,
                         id: (id_ident, id_ty),
+                        columns: non_id_columns,
                     }))
                 } else {
                     Either::B(error(format!(
@@ -583,7 +610,9 @@ impl Insert {
             .zip(
                 value_parser
                     .sep_by_allow_trailing(char(',').whitespace())
-                    .map(|values| values.into_iter().collect::<HashMap<_, _>>()),
+                    .map(|values| {
+                        values.into_iter().collect::<HashMap<_, _>>()
+                    }),
             )
             .zip_left(char(')'))
             .map(|(table, values)| Insert { table, values })
