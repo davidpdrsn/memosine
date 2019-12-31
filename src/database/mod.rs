@@ -67,7 +67,7 @@ impl Database {
                             .values
                             .remove(column_name)
                             .ok_or_else(|| Error::UndefinedColumn {
-                                table_name: table.name.clone(),
+                                table_name: Some(table.name.clone()),
                                 column_name: column_name.clone(),
                             })?;
 
@@ -102,7 +102,10 @@ impl Database {
 
     pub fn run_select(&self, stmt: &Select) -> Result<Projection> {
         assert!(stmt.joins.len() == 0, "joins are not supported");
-        assert!(stmt.where_clause.is_none(), "where clauses are not supported");
+        assert!(
+            stmt.where_clause.is_none(),
+            "where clauses are not supported"
+        );
 
         let full_projection = {
             let mut full_projection = Projection::default();
@@ -139,6 +142,12 @@ impl Database {
                                     &column.table == table_name
                                 })
                                 .unzip::<_, _, Vec<_>, Vec<_>>();
+
+                            if columns.is_empty() {
+                                return Err(Error::TableMissingFromSource {
+                                    name: table_name.clone(),
+                                });
+                            }
 
                             // extend header
                             projection.header.extend(
@@ -191,7 +200,12 @@ impl Database {
                                 .collect::<Vec<_>>();
 
                             match matching_columns.len() {
-                                0 => todo!("undefined column"),
+                                0 => {
+                                    return Err(Error::UndefinedColumn {
+                                        table_name: Some(table_name.clone()),
+                                        column_name: column_name.clone(),
+                                    })
+                                }
                                 1 => {
                                     let (cell_idx, column_name) =
                                         matching_columns.remove(0);
@@ -269,7 +283,12 @@ impl Database {
                             .collect::<Vec<_>>();
 
                         match matching_columns.len() {
-                            0 => todo!("undefined column"),
+                            0 => {
+                                return Err(Error::UndefinedColumn {
+                                    table_name: None,
+                                    column_name: column_name.clone(),
+                                })
+                            }
                             1 => {
                                 let (cell_idx, column_name) =
                                     matching_columns.remove(0);
@@ -462,8 +481,9 @@ impl<'a> fmt::Display for Tsv<'a> {
                 .join("\t")
         )?;
 
-        for row in &self.0.rows {
-            writeln!(
+        let len = self.0.rows.len();
+        for (idx, row) in self.0.rows.iter().enumerate() {
+            write!(
                 f,
                 "{}",
                 row.values
@@ -472,6 +492,10 @@ impl<'a> fmt::Display for Tsv<'a> {
                     .collect::<Vec<_>>()
                     .join("\t")
             )?;
+
+            if !(idx == len - 1) {
+                write!(f, "\n")?;
+            }
         }
 
         Ok(())

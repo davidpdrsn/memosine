@@ -1,6 +1,7 @@
 use crate::schema::Type;
 use crate::sql::Ident;
 use std::fmt;
+use crate::utils::parse::ParseError;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -12,8 +13,11 @@ pub enum Error {
     UndefinedTable {
         name: Ident,
     },
+    TableMissingFromSource {
+        name: Ident,
+    },
     UndefinedColumn {
-        table_name: Ident,
+        table_name: Option<Ident>,
         column_name: Ident,
     },
     InsertTypeError {
@@ -35,14 +39,25 @@ impl fmt::Display for Error {
             UndefinedTable { name } => {
                 write!(f, "Table `{}` is not defined", name)
             }
+            TableMissingFromSource { name } => write!(
+                f,
+                "Table `{}` is missing from `from` or `join` clauses",
+                name
+            ),
             UndefinedColumn {
                 table_name,
                 column_name,
-            } => write!(
-                f,
-                "Column`{}.{}` is not defined",
-                table_name, column_name
-            ),
+            } => {
+                if let Some(table_name) = table_name {
+                    write!(
+                        f,
+                        "Column`{}.{}` is not defined",
+                        table_name, column_name
+                    )
+                } else {
+                    write!(f, "Column`{}` is not defined", column_name)
+                }
+            }
             InsertTypeError {
                 table_name,
                 column_name,
@@ -62,3 +77,5 @@ impl fmt::Display for Error {
         }
     }
 }
+
+impl std::error::Error for Error {}

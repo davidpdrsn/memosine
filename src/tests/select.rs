@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn test_select_star() {
     let db = setup();
-    let projection = run_select(&db, "select * from users");
+    let projection = run_select(&db, "select * from users").unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -49,7 +49,7 @@ fn test_select_star() {
 #[test]
 fn test_select_relative_star() {
     let db = setup();
-    let projection = run_select(&db, "select users.* from users");
+    let projection = run_select(&db, "select users.* from users").unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -96,7 +96,7 @@ fn test_select_relative_star() {
 fn test_select_relative() {
     let db = setup();
     let projection =
-        run_select(&db, "select id, name, age, country_id from users");
+        run_select(&db, "select id, name, age, country_id from users").unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -145,7 +145,7 @@ fn test_select_absolute() {
     let projection = run_select(
         &db,
         "select users.id, users.name, users.age, users.country_id from users",
-    );
+    ).unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -191,7 +191,7 @@ fn test_select_absolute() {
 #[test]
 fn test_select_relative_subset() {
     let db = setup();
-    let projection = run_select(&db, "select id, name from users");
+    let projection = run_select(&db, "select id, name from users").unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -221,7 +221,7 @@ fn test_select_relative_subset() {
 #[test]
 fn test_select_absolute_subset() {
     let db = setup();
-    let projection = run_select(&db, "select users.id, users.name from users");
+    let projection = run_select(&db, "select users.id, users.name from users").unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -251,7 +251,7 @@ fn test_select_absolute_subset() {
 #[test]
 fn test_select_relative_different_order() {
     let db = setup();
-    let projection = run_select(&db, "select age, name from users");
+    let projection = run_select(&db, "select age, name from users").unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -281,7 +281,7 @@ fn test_select_relative_different_order() {
 #[test]
 fn test_select_absolute_different_order() {
     let db = setup();
-    let projection = run_select(&db, "select users.age, users.name from users");
+    let projection = run_select(&db, "select users.age, users.name from users").unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -311,7 +311,7 @@ fn test_select_absolute_different_order() {
 #[test]
 fn select_same_column_twice() {
     let db = setup();
-    let projection = run_select(&db, "select age, age from users");
+    let projection = run_select(&db, "select age, age from users").unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -341,7 +341,7 @@ fn select_same_column_twice() {
 #[test]
 fn select_same_column_twice_including_star() {
     let db = setup();
-    let projection = run_select(&db, "select users.*, age, age from users");
+    let projection = run_select(&db, "select users.*, age, age from users").unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -403,7 +403,7 @@ fn select_same_column_twice_including_star() {
 #[test]
 fn select_double_star_relative() {
     let db = setup();
-    let projection = run_select(&db, "select *, * from users");
+    let projection = run_select(&db, "select *, * from users").unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -453,7 +453,7 @@ fn select_double_star_relative() {
 #[test]
 fn select_double_star_absolute() {
     let db = setup();
-    let projection = run_select(&db, "select users.*, users.* from users");
+    let projection = run_select(&db, "select users.*, users.* from users").unwrap();
 
     assert_eq!(2, projection.rows.len());
 
@@ -500,5 +500,39 @@ fn select_double_star_absolute() {
     assert!(tuples.is_empty());
 }
 
-// TODO: `select users.* from countries` should fail
+#[test]
+fn selecting_undefined_column_relative() {
+    let db = setup();
+    let projection = run_select(&db, "select foo from users");
+    assert!(projection.is_err());
+}
+
+#[test]
+fn selecting_undefined_column_absolute() {
+    let db = setup();
+    let projection = run_select(&db, "select users.foo from users");
+    assert!(projection.is_err());
+}
+
+#[test]
+fn column_missing_from_source() {
+    let db = setup();
+    let projection = run_select(&db, "select countries.id from users");
+    assert!(projection.is_err());
+}
+
+#[test]
+fn column_missing_from_source_star() {
+    let db = setup();
+    let projection = run_select(&db, "select countries.* from users");
+    assert!(projection.is_err());
+}
+
+#[test]
+fn column_missing_from_source_star_undefined_source() {
+    let db = setup();
+    let projection = run_select(&db, "select foo.* from users");
+    assert!(projection.is_err());
+}
+
 // TODO: relative ambiguous gives error (requires joins)

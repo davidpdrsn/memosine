@@ -7,6 +7,8 @@ use std::iter::Iterator;
 use std::ops::Index;
 use std::ops::{Deref, DerefMut};
 
+pub mod parse;
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Either<A, B> {
     A(A),

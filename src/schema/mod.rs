@@ -57,7 +57,7 @@ impl Table {
                 .find(|(key, _)| key == column)
                 .map(|(_, v)| v)
                 .ok_or_else(|| Error::UndefinedColumn {
-                    table_name: self.name.clone(),
+                    table_name: Some(self.name.clone()),
                     column_name: column.clone(),
                 })
         }

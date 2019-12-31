@@ -1,19 +1,16 @@
 use crate::schema::Type;
 use crate::utils::Either;
-use parse::*;
 use std::collections::HashMap;
 use std::fmt;
-
-mod parse;
+use crate::utils::parse::*;
 
 use crate::database::Value;
-pub use parse::ParseError;
 
-pub fn parse_sql_query(query: &str) -> Result<Statement, ParseError> {
+pub fn parse_sql_query<'a>(query: &'a str) -> Result<Statement, ParseError<'a>> {
     parse(&Statement::parser(), query)
 }
 
-pub fn parse_sql_queries(query: &str) -> Result<Vec<Statement>, ParseError> {
+pub fn parse_sql_queries<'a>(query: &'a str) -> Result<Vec<Statement>, ParseError<'a>> {
     parse(&many(Statement::parser()), query)
 }
 

@@ -8,3 +8,5 @@ edition = "2018"
 
 [dependencies]
 extend = "0.1.0"
+structopt = "0.3.7"
+rustyline = "5.0.5"

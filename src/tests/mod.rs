@@ -1,5 +1,6 @@
 use crate::database::{Database, Value, Projection, AbsoluteColumn};
 use crate::sql::{parse_sql_queries, Ident, Statement};
+use crate::error::{Result, Error};
 
 mod select;
 
@@ -48,12 +49,12 @@ fn run_all_statements(db: &mut Database, statements: Vec<Statement>) {
     }
 }
 
-fn run_select<'a>(db: &'a Database, query: &str) -> Projection<'a> {
-    let mut queries = parse_sql_queries(query).unwrap();
+fn run_select<'a>(db: &'a Database, query: &str) -> Result<Projection<'a>> {
+    let mut queries = parse_sql_queries(query).expect("parse error");
     assert_eq!(1, queries.len(), "more than one query");
     let query = match queries.remove(0) {
         Statement::Select(inner) => inner,
         _ => panic!("thats not a select query"),
     };
-    db.run_select(&query).unwrap()
+    db.run_select(&query)
 }
