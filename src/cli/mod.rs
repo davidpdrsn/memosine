@@ -104,6 +104,8 @@ fn repl(file_contents: &Option<String>) -> Result<(), CliError> {
                 let cmd = match parse(&CliCommand::parser(), &line) {
                     Ok(cmd) => cmd,
                     Err(err) => {
+                        rl.add_history_entry(line.as_str());
+
                         eprintln!("Parse error: {}", err);
                         continue;
                     }
@@ -116,9 +118,18 @@ fn repl(file_contents: &Option<String>) -> Result<(), CliError> {
                         rl.add_history_entry(line.as_str());
 
                         let start = Instant::now();
-                        run_statement(&mut db, stmt)?;
+                        let count = run_statement(&mut db, stmt)?;
                         let duration = start.elapsed();
-                        println!("Took {:?}", duration);
+
+                        if let Some(count) = count {
+                            let word = if count == 1 { "row" } else { "rows" };
+                            println!(
+                                "Took {:?} | {} {}",
+                                duration, count, word
+                            );
+                        } else {
+                            println!("Took {:?}", duration);
+                        }
                     }
                 }
             }
@@ -148,24 +159,37 @@ fn run_file<'a>(
     Ok(())
 }
 
+macro_rules! or_print_err {
+    ($e:expr) => {
+        match $e {
+            Ok(x) => x,
+            Err(err) => {
+                println!("{}", err);
+                return Ok(None);
+            }
+        }
+    };
+}
+
 fn run_statement<'a>(
     db: &mut Database,
     statement: Statement,
-) -> Result<(), CliError<'a>> {
+) -> Result<Option<usize>, CliError<'a>> {
     match statement {
         Statement::CreateTable(inner) => {
-            db.run_create_table(inner)?;
+            or_print_err!(db.run_create_table(inner));
+            Ok(None)
         }
         Statement::Insert(inner) => {
-            db.run_insert(inner)?;
+            or_print_err!(db.run_insert(inner.clone()));
+            Ok(None)
         }
         Statement::Select(inner) => {
-            let selection = db.run_select(&inner)?;
+            let selection = or_print_err!(db.run_select(&inner));
             println!("{}", selection.tsv());
+            Ok(Some(selection.rows.len()))
         }
     }
-
-    Ok(())
 }
 
 #[derive(Debug)]

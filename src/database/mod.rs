@@ -1,7 +1,8 @@
-use crate::error::{Error, Result};
+use crate::error::{self, Error, Result};
 use crate::schema::{self, Schema, Type};
 use crate::sql::{
-    self, Column, CreateTable, Ident, Insert, RelativeColumn, Select, Source,
+    self, BinOp, Column, CreateTable, Ident, Insert, RelativeColumn, Select,
+    Source,
 };
 use crate::utils::ExtendOrSet;
 use crate::utils::{Arena, Id, IdMap};
@@ -102,10 +103,6 @@ impl Database {
 
     pub fn run_select(&self, stmt: &Select) -> Result<Projection> {
         assert!(stmt.joins.len() == 0, "joins are not supported");
-        assert!(
-            stmt.where_clause.is_none(),
-            "where clauses are not supported"
-        );
 
         let full_projection = {
             let mut full_projection = Projection::default();
@@ -121,6 +118,26 @@ impl Database {
             };
             full_projection.extend_rows(rows);
 
+            full_projection
+        };
+
+        let full_projection = if let Some(where_clause) = &stmt.where_clause {
+            let Projection { header, rows } = full_projection;
+
+            let iter = rows
+                .into_iter()
+                .map(|row| Result::<_, Error>::Ok(Some(row)));
+            let filtered_iter =
+                self.apply_where_clause(Box::new(iter), where_clause, &header);
+
+            let rows = filtered_iter
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .filter_map(|x| x)
+                .collect::<Vec<_>>();
+
+            Projection { header, rows }
+        } else {
             full_projection
         };
 
@@ -342,6 +359,147 @@ impl Database {
             .get(name)
             .ok_or_else(|| Error::UndefinedTable { name: name.clone() })
     }
+
+    fn apply_where_clause<'query, 'db: 'query>(
+        &'db self,
+        iter: Box<dyn Iterator<Item = Result<Option<Cow<'db, Row>>>> + 'query>,
+        clause: &'query sql::WhereClause,
+        header: &'query [AbsoluteColumn],
+    ) -> Box<dyn Iterator<Item = Result<Option<Cow<'db, Row>>>> + 'query> {
+        let new_iter = iter.map(move |row| {
+            let row = row?;
+
+            let cond: Option<bool> = row
+                .as_ref()
+                .map(|row| self.eval_where_clause(row, clause, header))
+                .transpose()?;
+
+            if cond.unwrap_or_else(|| false) {
+                Ok(row)
+            } else {
+                Ok(None)
+            }
+        });
+
+        Box::new(new_iter)
+    }
+
+    fn eval_where_clause<'query, 'db: 'query>(
+        &'db self,
+        row: &'db Cow<'db, Row>,
+        clause: &'query sql::WhereClause,
+        header: &[AbsoluteColumn],
+    ) -> Result<bool> {
+        use sql::Expr;
+        use sql::WhereClause::*;
+
+        match clause {
+            Grouped(inner) => self.eval_where_clause(row, &*inner, header),
+
+            And(lhs, rhs) => {
+                let cond = self.eval_where_clause(row, &*lhs, header)?
+                    && self.eval_where_clause(row, &*rhs, header)?;
+                Ok(cond)
+            }
+            Or(lhs, rhs) => {
+                let cond = self.eval_where_clause(row, &*lhs, header)?
+                    || self.eval_where_clause(row, &*rhs, header)?;
+                Ok(cond)
+            }
+
+            BinOp(op, lhs, rhs) => match (lhs, rhs) {
+                (Expr::Value(lhs), Expr::Value(rhs)) => Ok(op.eval(lhs, rhs)),
+                (Expr::Value(lhs), Expr::Column(rhs_ref)) => {
+                    let rhs = self.column_value(rhs_ref, header, row)?;
+                    Ok(op.eval(lhs, rhs))
+                }
+                (Expr::Column(lhs_ref), Expr::Value(rhs)) => {
+                    let lhs = self.column_value(lhs_ref, header, row)?;
+                    Ok(op.eval(lhs, rhs))
+                }
+                (Expr::Column(lhs_ref), Expr::Column(rhs_ref)) => {
+                    let lhs = self.column_value(lhs_ref, header, row)?;
+                    let rhs = self.column_value(rhs_ref, header, row)?;
+                    Ok(op.eval(lhs, rhs))
+                }
+            },
+        }
+    }
+
+    fn column_value<'a>(
+        &self,
+        column: &sql::Column,
+        header: &[AbsoluteColumn],
+        row: &'a Cow<Row>,
+    ) -> Result<&'a Value> {
+        match column {
+            Column::Absolute(absolute) => {
+                let sql::AbsoluteColumn {
+                    table,
+                    column: relative_column,
+                } = absolute;
+
+                let column = match relative_column {
+                    sql::RelativeColumn::Ident(ident) => ident,
+                    sql::RelativeColumn::Star(_) => {
+                        return Err(Error::StarInWhereClause {
+                            table_name: Some(table.clone()),
+                        })
+                    }
+                };
+
+                let idx = header
+                    .iter()
+                    .enumerate()
+                    .find(|(_, header_col)| {
+                        &header_col.table == table
+                            && &header_col.column == column
+                    })
+                    .map(|(idx, _)| idx)
+                    .ok_or_else(|| Error::UndefinedColumn {
+                        table_name: Some(table.clone()),
+                        column_name: column.clone(),
+                    })?;
+
+                Ok(&row.values[idx])
+            }
+            Column::Relative(relative) => {
+                let column = match relative {
+                    sql::RelativeColumn::Ident(ident) => ident,
+                    sql::RelativeColumn::Star(_) => {
+                        return Err(Error::StarInWhereClause {
+                            table_name: None
+                        })
+                    }
+                };
+
+                let idxs = header
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, header_col)| {
+                        column == &header_col.column
+                    })
+                    .map(|(idx, _)| idx)
+                    .collect::<Vec<_>>();
+
+                match idxs.len() {
+                    0 => {
+                        return Err(Error::UndefinedColumn {
+                            table_name: None,
+                            column_name: column.clone(),
+                        })
+                    }
+                    1 => {
+                        let idx = idxs[0];
+                        Ok(&row.values[idx])
+                    }
+                    _ => {
+                        todo!("unambiguous relative column projection")
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -383,7 +541,7 @@ impl FromIterator<Value> for Row {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Value {
     Int(i64),
     String(String),

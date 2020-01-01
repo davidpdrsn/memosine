@@ -535,4 +535,47 @@ fn column_missing_from_source_star_undefined_source() {
     assert!(projection.is_err());
 }
 
+#[test]
+fn select_where_relative_lit_eq_lit() {
+    let db = setup();
+    let projection = run_select(&db, "select id from users where 1 = 1").unwrap();
+    let mut tuples = projection.to_tuples();
+
+    assert_eq!(
+        tuples.remove(0),
+        (AbsoluteColumn::from("users.id"), Value::from(1))
+    );
+
+    assert_eq!(
+        tuples.remove(0),
+        (AbsoluteColumn::from("users.id"), Value::from(2))
+    );
+
+    assert!(tuples.is_empty());
+}
+
+#[test]
+fn select_where_relative_lit_eq_lit_false() {
+    let db = setup();
+    let projection = run_select(&db, "select id from users where 1 = 2").unwrap();
+    let tuples = projection.to_tuples();
+
+    assert!(tuples.is_empty());
+}
+
+#[test]
+fn select_where_relative_col_eq_lit() {
+    let db = setup();
+    let projection = run_select(&db, "select name from users where id = 1").unwrap();
+
+    let mut tuples = projection.to_tuples();
+
+    assert_eq!(
+        tuples.remove(0),
+        (AbsoluteColumn::from("users.name"), Value::from("Alice"))
+    );
+
+    assert!(tuples.is_empty());
+}
+
 // TODO: relative ambiguous gives error (requires joins)

@@ -26,6 +26,9 @@ pub enum Error {
         expected_type: Type,
         actual_type: Type,
     },
+    StarInWhereClause {
+        table_name: Option<Ident>,
+    }
 }
 
 impl fmt::Display for Error {
@@ -51,11 +54,11 @@ impl fmt::Display for Error {
                 if let Some(table_name) = table_name {
                     write!(
                         f,
-                        "Column`{}.{}` is not defined",
+                        "Column `{}.{}` is not defined",
                         table_name, column_name
                     )
                 } else {
-                    write!(f, "Column`{}` is not defined", column_name)
+                    write!(f, "Column `{}` is not defined", column_name)
                 }
             }
             InsertTypeError {
@@ -73,6 +76,13 @@ impl fmt::Display for Error {
                 write!(f, "but received value of type `{}`", actual_type)?;
 
                 Ok(())
+            }
+            StarInWhereClause { table_name } => {
+                if let Some(table_name) = table_name {
+                    write!(f, "Cannot have `{}.*` in where clause", table_name)
+                } else {
+                    write!(f, "Cannot have `*` in where clause")
+                }
             }
         }
     }

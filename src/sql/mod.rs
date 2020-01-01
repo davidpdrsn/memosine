@@ -1,16 +1,20 @@
 use crate::schema::Type;
+use crate::utils::parse::*;
 use crate::utils::Either;
 use std::collections::HashMap;
 use std::fmt;
-use crate::utils::parse::*;
 
 use crate::database::Value;
 
-pub fn parse_sql_query<'a>(query: &'a str) -> Result<Statement, ParseError<'a>> {
+pub fn parse_sql_query<'a>(
+    query: &'a str,
+) -> Result<Statement, ParseError<'a>> {
     parse(&Statement::parser(), query)
 }
 
-pub fn parse_sql_queries<'a>(query: &'a str) -> Result<Vec<Statement>, ParseError<'a>> {
+pub fn parse_sql_queries<'a>(
+    query: &'a str,
+) -> Result<Vec<Statement>, ParseError<'a>> {
     parse(&many(Statement::parser()), query)
 }
 
@@ -230,7 +234,7 @@ pub struct OuterJoin {
     where_clause: WhereClause,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Column {
     Relative(RelativeColumn),
     Absolute(AbsoluteColumn),
@@ -327,10 +331,15 @@ impl Ident {
         let ident_char = any_char()
             .when(|c| !c.is_whitespace() && (c.is_alphanumeric() || c == &'_'));
 
-        many1(ident_char)
-            .map(|chars| chars.iter().collect::<String>())
-            .when(|value| !KEYWORDS.contains(&value.as_str()))
-            .map(|value| Ident { value })
+        ident_char
+            .when(|c| !c.is_numeric())
+            .and_then(move |first_char| {
+                many(ident_char)
+                    .map(|chars| chars.iter().collect::<String>())
+                    .map(move |rest: String| format!("{}{}", first_char, rest))
+                    .when(|value| !KEYWORDS.contains(&value.as_str()))
+                    .map(move |value| Ident { value })
+            })
     }
 }
 
@@ -355,13 +364,7 @@ pub enum WhereClause {
     Grouped(Box<WhereClause>),
     And(Box<WhereClause>, Box<WhereClause>),
     Or(Box<WhereClause>, Box<WhereClause>),
-
-    Eq(Expr, Expr),
-    NotEq(Expr, Expr),
-    Lt(Expr, Expr),
-    Gt(Expr, Expr),
-    LtEq(Expr, Expr),
-    GtEq(Expr, Expr),
+    BinOp(BinOp, Expr, Expr),
 }
 
 impl fmt::Display for WhereClause {
@@ -371,12 +374,9 @@ impl fmt::Display for WhereClause {
             WhereClause::And(lhs, rhs) => write!(f, "{} and {}", lhs, rhs),
             WhereClause::Or(lhs, rhs) => write!(f, "{} or {}", lhs, rhs),
 
-            WhereClause::Eq(lhs, rhs) => write!(f, "{} = {}", lhs, rhs),
-            WhereClause::NotEq(lhs, rhs) => write!(f, "{} != {}", lhs, rhs),
-            WhereClause::Lt(lhs, rhs) => write!(f, "{} < {}", lhs, rhs),
-            WhereClause::Gt(lhs, rhs) => write!(f, "{} > {}", lhs, rhs),
-            WhereClause::LtEq(lhs, rhs) => write!(f, "{} <= {}", lhs, rhs),
-            WhereClause::GtEq(lhs, rhs) => write!(f, "{} >= {}", lhs, rhs),
+            WhereClause::BinOp(op, lhs, rhs) => {
+                write!(f, "{} {} {}", lhs, op, rhs)
+            }
         }
     }
 }
@@ -399,23 +399,13 @@ impl Parser for WhereClauseParser {
         pos: Pos,
     ) -> ParseResult<'a, Self::Output> {
         {
-            let operator =
-                |op: StringParser, f: fn(Expr, Expr) -> WhereClause| {
-                    Expr::parser()
-                        .whitespace()
-                        .zip_left(op)
-                        .whitespace()
-                        .zip(Expr::parser())
-                        .zip_left(maybe(whitespace()))
-                        .map(move |(lhs, rhs)| f(lhs, rhs))
-                };
-
-            let eq = operator(string("="), WhereClause::Eq);
-            let not_eq = operator(string("!="), WhereClause::NotEq);
-            let lt = operator(string("<"), WhereClause::Lt);
-            let gt = operator(string(">"), WhereClause::Gt);
-            let lt_eq = operator(string("<="), WhereClause::LtEq);
-            let gt_eq = operator(string(">="), WhereClause::GtEq);
+            let bin_op = Expr::parser()
+                .whitespace()
+                .zip(BinOp::parser())
+                .whitespace()
+                .zip(Expr::parser())
+                .zip_left(maybe(whitespace()))
+                .map(move |((lhs, op), rhs)| WhereClause::BinOp(op, lhs, rhs));
 
             let lhs_rhs_parser = |s| {
                 whitespace()
@@ -434,9 +424,7 @@ impl Parser for WhereClauseParser {
                 .zip_left(maybe(whitespace()))
                 .map(|wc| WhereClause::Grouped(Box::new(wc)));
 
-            let base = eq.or(not_eq).or(lt).or(gt).or(lt_eq).or(gt_eq);
-
-            (base.or(grouped))
+            (bin_op.or(grouped))
                 .zip(maybe(and))
                 .map(|(lhs, rhs)| match rhs {
                     Some(rhs) => WhereClause::And(Box::new(lhs), Box::new(rhs)),
@@ -452,7 +440,61 @@ impl Parser for WhereClauseParser {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
+pub enum BinOp {
+    Eq,
+    NotEq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
+}
+
+impl BinOp {
+    fn parser() -> impl Parser<Output = Self> {
+        use BinOp::*;
+
+        let op = |s: &str, op: Self| string(s).map(move |_| op);
+
+        op("=", Eq)
+            .or(op("!=", NotEq))
+            .or(op("<=", LtEq))
+            .or(op(">=", GtEq))
+            .or(op("<", Lt))
+            .or(op(">", Gt))
+    }
+
+    pub fn eval<T>(&self, lhs: T, rhs: T) -> bool
+    where
+        T: PartialEq<T> + PartialOrd<T>,
+    {
+        use BinOp::*;
+
+        match self {
+            Eq => lhs == rhs,
+            NotEq => lhs != rhs,
+            Lt => lhs < rhs,
+            Gt => lhs > rhs,
+            LtEq => lhs <= rhs,
+            GtEq => lhs >= rhs,
+        }
+    }
+}
+
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            BinOp::Eq => write!(f, "="),
+            BinOp::NotEq => write!(f, "!="),
+            BinOp::Lt => write!(f, "<"),
+            BinOp::Gt => write!(f, ">"),
+            BinOp::LtEq => write!(f, "<="),
+            BinOp::GtEq => write!(f, ">="),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Expr {
     Column(Column),
     Value(Value),
@@ -487,19 +529,25 @@ impl fmt::Display for Value {
 
 impl Value {
     fn parser() -> impl Parser<Output = Self> {
-        let int = many1(any_char().when(|c| c.is_numeric())).map(|digits| {
-            let digits = digits.iter().collect::<String>().parse().unwrap();
-            Value::Int(digits)
-        });
+        let int = int_parser().map(Value::Int);
+        let string = string_parser().map(Value::String);
 
-        let string = char('"')
-            .zip_right(many(any_char().when(|c| c != &'"')))
-            .zip_left(char('"'))
-            .map(|chars| chars.iter().collect::<String>())
-            .map(|s| Value::String(s));
-
-        int.or(string).whitespace()
+        int.or(string)
     }
+}
+
+fn int_parser() -> impl Parser<Output = i64> {
+    let digit = any_char().when(|c| c.is_numeric());
+
+    many1(digit)
+        .map(|digits| digits.iter().collect::<String>().parse().unwrap())
+}
+
+fn string_parser() -> impl Parser<Output = String> {
+    char('"')
+        .zip_right(many(any_char().when(|c| c != &'"')))
+        .zip_left(char('"'))
+        .map(|chars| chars.iter().collect::<String>())
 }
 
 #[derive(Debug, Clone)]
@@ -636,6 +684,22 @@ impl fmt::Display for Insert {
 mod test {
     #[allow(unused_imports)]
     use super::*;
+
+    #[test]
+    fn ident_parsing() {
+        assert_eq!(Ident::new("id"), parse(&Ident::parser(), "id").unwrap());
+        assert_eq!(
+            Ident::new("country_id"),
+            parse(&Ident::parser(), "country_id").unwrap()
+        );
+        assert_eq!(
+            Ident::new("country_id_1"),
+            parse(&Ident::parser(), "country_id_1").unwrap()
+        );
+
+        assert!(parse(&Ident::parser(), "1").is_err());
+        assert!(parse(&Ident::parser(), "1_foo").is_err());
+    }
 
     #[test]
     fn single_ident() {
@@ -793,6 +857,15 @@ mod test {
                     age = 20,
                 );
             "#,
+        );
+    }
+
+    #[test]
+    fn expr_parsing() {
+        assert_eq!(Value::Int(1), parse(&Value::parser(), "1").unwrap());
+        assert_eq!(
+            Value::String("hi".to_string()),
+            parse(&Value::parser(), "\"hi\"").unwrap()
         );
     }
 
