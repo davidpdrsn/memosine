@@ -1,7 +1,7 @@
 use crate::schema::Type;
 use crate::sql::Ident;
-use std::fmt;
 use crate::utils::parse::ParseError;
+use std::fmt;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -28,7 +28,7 @@ pub enum Error {
     },
     StarInWhereClause {
         table_name: Option<Ident>,
-    }
+    },
 }
 
 impl fmt::Display for Error {

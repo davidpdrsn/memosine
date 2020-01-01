@@ -468,7 +468,7 @@ impl Database {
                     sql::RelativeColumn::Ident(ident) => ident,
                     sql::RelativeColumn::Star(_) => {
                         return Err(Error::StarInWhereClause {
-                            table_name: None
+                            table_name: None,
                         })
                     }
                 };
@@ -476,9 +476,7 @@ impl Database {
                 let idxs = header
                     .iter()
                     .enumerate()
-                    .filter(|(_, header_col)| {
-                        column == &header_col.column
-                    })
+                    .filter(|(_, header_col)| column == &header_col.column)
                     .map(|(idx, _)| idx)
                     .collect::<Vec<_>>();
 
@@ -493,9 +491,7 @@ impl Database {
                         let idx = idxs[0];
                         Ok(&row.values[idx])
                     }
-                    _ => {
-                        todo!("unambiguous relative column projection")
-                    }
+                    _ => todo!("unambiguous relative column projection"),
                 }
             }
         }

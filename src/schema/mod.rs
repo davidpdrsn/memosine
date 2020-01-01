@@ -101,10 +101,22 @@ mod test {
             let users_table = db.get_table(&Ident::new("users")).unwrap();
             let columns = &users_table.schema.columns();
             assert_eq!(columns.len(), 4);
-            assert_eq!(&columns[0], &(&Ident::new("id"), &Type::Named(Ident::new("Int"))));
-            assert_eq!(&columns[1], &(&Ident::new("name"), &Type::Named(Ident::new("String"))));
-            assert_eq!(&columns[2], &(&Ident::new("age"), &Type::Named(Ident::new("Int"))));
-            assert_eq!(&columns[3], &(&Ident::new("country_id"), &Type::Named(Ident::new("Int"))));
+            assert_eq!(
+                &columns[0],
+                &(&Ident::new("id"), &Type::Named(Ident::new("Int")))
+            );
+            assert_eq!(
+                &columns[1],
+                &(&Ident::new("name"), &Type::Named(Ident::new("String")))
+            );
+            assert_eq!(
+                &columns[2],
+                &(&Ident::new("age"), &Type::Named(Ident::new("Int")))
+            );
+            assert_eq!(
+                &columns[3],
+                &(&Ident::new("country_id"), &Type::Named(Ident::new("Int")))
+            );
         }
     }
 }

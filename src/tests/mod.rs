@@ -1,6 +1,6 @@
-use crate::database::{Database, Value, Projection, AbsoluteColumn};
+use crate::database::{AbsoluteColumn, Database, Projection, Value};
+use crate::error::{Error, Result};
 use crate::sql::{parse_sql_queries, Ident, Statement};
-use crate::error::{Result, Error};
 
 mod select;
 
